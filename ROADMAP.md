@@ -1,0 +1,52 @@
+# ROADMAP.md — Buggies
+
+The phases of production, and — more importantly — what each phase *proves*. The purpose of this file is to stop the most common failure mode: building the fun parts first and never shipping the boring foundation that the whole thesis depends on.
+
+## The one rule that governs sequencing
+
+**The sandbox reproduction must exist in v0.** It is not a feature to add later — it is the entire reason Buggies is not a thin LLM wrapper. If you ship a "PR reviewer" that returns opinions before it can return proofs, then for that whole period you *are* a wrapper, and a savvy customer will say so. Proof-in-a-sandbox is v0 or the product has no edge.
+
+## v0 — the precision claim
+
+**Ships:** PR reviewer (left door). Correctness + Contract types. Every finding carries a reproduction (failing test) from the units-first sandbox. First two language adapters (JS/TS, Python). GitHub App + CLI.
+
+**Proves:** that findings are true by construction and the false-positive war doesn't apply. Nothing else matters until this lands. If v0 doesn't feel obviously more trustworthy than a chat window, stop and fix that before building anything else.
+
+**Explicitly deferred:** production loop, security type, full-app sandbox, additional languages, merge gating.
+
+## v0.5 — the read-only production connector
+
+**Ships:** read-only error-tracker connector (Sentry first). Links existing prod incidents to source. Backfills historical attribution.
+
+**Proves:** immediate value with **zero production install** — paste an API key, get "of your 140 incidents last year, 61 were catchable at PR time." This is the pre-payment sales artifact, and it's also your first stream of ground-truth labels. Cheap to build (read-only integration), disproportionately valuable.
+
+**Why here and not later:** it costs one API key and it starts the ground-truth flywheel immediately. Every week it isn't running is a week of unlabeled data lost.
+
+## v1 — the loop closes (the fundraise)
+
+**Ships:** incidents trigger hunts (right door fully live). Sibling search. Silence scoring / per-codebase calibration. Told-you-so attribution. Reverse test generation. More language adapters (JVM, Go, Ruby). Full-application sandbox (the deferred v0 kernel capability) for richer runtime reproductions.
+
+**Proves:** the thing nobody else has — a bug finder that learns from what actually breaks. This is the story that raises money and the moat that compounds. The gap between Buggies and any PR-only competitor becomes structural here, because they cannot replicate the loop.
+
+## v2 — security + gating (expand the buyer)
+
+**Ships:** Security risk type, using exploit-verification machinery hardened in BugOps and flowing across the kernel wall as code. Merge gating with a tunable confidence policy. Remaining language adapters (C#/.NET, PHP, Rust). Self-hosted mode fully productized for enterprise-adjacent buyers.
+
+**Proves:** the buyer expands from eng manager to eng manager + security. The merge gate turns Buggies from advisory into part of the pipeline. Note the dependency: v2 security leans on what BugOps learns — this is the one designed synergy between the two products, delivered as shared kernel code, never shared data.
+
+## What is deliberately NOT on this roadmap (yet)
+
+These would be speculative fiction now and will be written when working code constrains them:
+
+- Detailed data-model / schema docs — earn their place once the finding store is real.
+- Formal API spec — once integrations are built, not before.
+- Enterprise co-sell motion — not until mid-market works.
+- Any full APM capability — permanently out of scope (see non-goals).
+
+## The failure modes this roadmap defends against
+
+1. **Shipping a wrapper.** Defended by: sandbox in v0, non-negotiable.
+2. **Building the loop before the reviewer is trusted.** Defended by: v0 proves precision before v1 builds the loop.
+3. **Boiling the ocean on languages.** Defended by: two adapters in v0, sequenced delivery after, each a bounded unit of work.
+4. **Losing ground-truth data.** Defended by: read-only connector in v0.5, earliest feasible point.
+5. **Negative gross margin.** Defended by: model cascade required before scale (see STACK).

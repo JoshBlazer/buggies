@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.test
+*.out
+# local multi-module dev; CI resolves the kernel by tag
+go.work
+go.work.sum
+.env
+*.db
