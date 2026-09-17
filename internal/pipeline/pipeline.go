@@ -331,3 +331,19 @@ func DefaultLimits() triad.Limits {
 		},
 	}
 }
+
+// Scope indexes and returns the blast radius for base..head without
+// running the triad. Used by `buggies radius` for inspection.
+func (p *Pipeline) Scope(ctx context.Context, base, head string) (graph.BlastRadius, error) {
+	if p.RadiusDepth <= 0 {
+		p.RadiusDepth = 2
+	}
+	hunks, _, err := p.hunks(ctx, base, head)
+	if err != nil {
+		return graph.BlastRadius{}, err
+	}
+	if err := p.Graph.Index(ctx, p.Root, nil); err != nil {
+		return graph.BlastRadius{}, err
+	}
+	return p.Graph.BlastRadius(ctx, hunks, p.RadiusDepth)
+}

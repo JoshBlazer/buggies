@@ -32,6 +32,7 @@ const usage = `buggies — proof, not opinion
 usage:
   buggies review --repo <path> --name owner/repo --base <rev> --head <rev> [--post owner/repo#N] [--json]
   buggies index  --repo <path> --name owner/repo
+  buggies radius --repo <path> --name owner/repo --base <rev> --head <rev>
   buggies version
 
 Only reproduced findings are shown as findings. Everything else is discarded.
@@ -59,6 +60,8 @@ func main() {
 		err = review(ctx, os.Args[2:])
 	case "index":
 		err = index(ctx, os.Args[2:])
+	case "radius":
+		err = radius(ctx, os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -220,5 +223,48 @@ func review(ctx context.Context, args []string) error {
 		}
 		fmt.Fprintln(os.Stderr, "posted:", url)
 	}
+	return nil
+}
+
+func radius(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("radius", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "path to the checkout")
+	name := fs.String("name", "", "repository name, owner/repo")
+	base := fs.String("base", "", "base revision")
+	head := fs.String("head", "HEAD", "head revision")
+	depth := fs.Int("depth", 2, "reverse-dependency hops")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" || *base == "" {
+		return fmt.Errorf("--name and --base are required")
+	}
+	root, err := filepath.Abs(*repo)
+	if err != nil {
+		return err
+	}
+	dd, err := dataDir(*name)
+	if err != nil {
+		return err
+	}
+	g, err := gsqlite.Open(filepath.Join(dd, "graph.db"), *name)
+	if err != nil {
+		return err
+	}
+	defer g.Close()
+	p := &pipeline.Pipeline{Repo: *name, Root: root, Graph: g, RadiusDepth: *depth}
+	br, err := p.Scope(ctx, *base, *head)
+	if err != nil {
+		return err
+	}
+	fmt.Println("changed:")
+	for _, s := range br.Changed {
+		fmt.Printf("  %s  %s:%d-%d\n", s.Name, s.Path, s.StartLine, s.EndLine)
+	}
+	fmt.Println("affected:")
+	for _, a := range br.Affected {
+		fmt.Printf("  d%d %-8s %s  %s:%d\n", a.Depth, a.Via, a.Symbol.Name, a.Symbol.Path, a.Symbol.StartLine)
+	}
+	fmt.Println("files:", strings.Join(br.Files, ", "))
 	return nil
 }
