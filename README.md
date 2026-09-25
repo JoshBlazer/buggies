@@ -24,6 +24,6 @@ tagged version in `go.mod` and is a thin, opinionated shell over it.
 
 ## Local development
 
-Two modules, one workspace. `go.work` (git-ignored) points at `../kernel` so
+Two modules, one workspace. `go.work` (git-ignored) points at `..` (the kernel repo, now the parent dir) so
 uncommitted kernel changes are picked up; CI resolves the kernel by tag.
 The sandbox runs in WSL2 Ubuntu (Docker + gVisor) — see `deploy/wsl-setup.md`.

@@ -9,7 +9,7 @@ Already in place: Docker (native, user in `docker` group), Go under
 
 One-time step that needs sudo (installs `runsc`, registers it with Docker):
 
-    wsl -d Ubuntu -- sudo bash /mnt/c/Users/user/documents/buggies/deploy/wsl-gvisor-setup.sh
+    wsl -d Ubuntu -- sudo bash /mnt/c/Users/user/documents/kernel/buggies/deploy/wsl-gvisor-setup.sh
 
 Run sandbox integration tests from WSL:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install gVisor (runsc) and register it with Docker inside WSL2 Ubuntu.
 # Needs sudo. Run from Windows with:
-#   wsl -d Ubuntu -- sudo bash /mnt/c/Users/user/documents/buggies/deploy/wsl-gvisor-setup.sh
+#   wsl -d Ubuntu -- sudo bash /mnt/c/Users/user/documents/kernel/buggies/deploy/wsl-gvisor-setup.sh
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then echo "run with sudo" >&2; exit 1; fi
