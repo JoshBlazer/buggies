@@ -2,7 +2,7 @@
 // which model at which cascade tier, budgets, and the self-throttle rule.
 package policy
 
-import "github.com/buggies-dev/kernel/finding"
+import "github.com/joshblazer/kernel/finding"
 
 // Cascade is Buggies' routing policy: optimise for predictable per-seat
 // margin. Cheap filters, mid confirms, frontier only on survivors.

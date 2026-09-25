@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buggies-dev/kernel/finding"
-	gsqlite "github.com/buggies-dev/kernel/graph/sqlite"
-	"github.com/buggies-dev/kernel/router"
-	"github.com/buggies-dev/kernel/sandbox"
-	"github.com/buggies-dev/kernel/sandbox/adapter/node"
+	"github.com/joshblazer/kernel/finding"
+	gsqlite "github.com/joshblazer/kernel/graph/sqlite"
+	"github.com/joshblazer/kernel/router"
+	"github.com/joshblazer/kernel/sandbox"
+	"github.com/joshblazer/kernel/sandbox/adapter/node"
 
-	"github.com/buggies-dev/buggies/internal/agents"
-	"github.com/buggies-dev/buggies/internal/store"
+	"github.com/joshblazer/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/store"
 )
 
 func gitRepo(t *testing.T) (root, base, head string) {

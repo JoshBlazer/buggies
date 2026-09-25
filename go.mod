@@ -1,10 +1,10 @@
-module github.com/buggies-dev/buggies
+module github.com/joshblazer/buggies
 
 go 1.26
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.73.0
-	github.com/buggies-dev/kernel v0.1.0
+	github.com/joshblazer/kernel v0.1.0
 	modernc.org/sqlite v1.59.0
 )
 

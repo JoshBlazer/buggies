@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buggies-dev/kernel/finding"
-	"github.com/buggies-dev/kernel/sandbox"
+	"github.com/joshblazer/kernel/finding"
+	"github.com/joshblazer/kernel/sandbox"
 )
 
 func TestRenderReproducedFindingCarriesProof(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/buggies-dev/buggies/internal/surfaces/prcomment"
+	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
 )
 
 // Client posts reviews with a personal access token (v0). The GitHub App

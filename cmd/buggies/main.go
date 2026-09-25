@@ -12,19 +12,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/buggies-dev/kernel/finding"
-	gsqlite "github.com/buggies-dev/kernel/graph/sqlite"
-	"github.com/buggies-dev/kernel/sandbox"
-	"github.com/buggies-dev/kernel/sandbox/adapter"
-	"github.com/buggies-dev/kernel/sandbox/adapter/node"
-	"github.com/buggies-dev/kernel/sandbox/runtime"
+	"github.com/joshblazer/kernel/finding"
+	gsqlite "github.com/joshblazer/kernel/graph/sqlite"
+	"github.com/joshblazer/kernel/sandbox"
+	"github.com/joshblazer/kernel/sandbox/adapter"
+	"github.com/joshblazer/kernel/sandbox/adapter/node"
+	"github.com/joshblazer/kernel/sandbox/runtime"
 
-	"github.com/buggies-dev/buggies/internal/agents"
-	"github.com/buggies-dev/buggies/internal/integrations/github"
-	"github.com/buggies-dev/buggies/internal/pipeline"
-	"github.com/buggies-dev/buggies/internal/policy"
-	"github.com/buggies-dev/buggies/internal/store"
-	"github.com/buggies-dev/buggies/internal/surfaces/prcomment"
+	"github.com/joshblazer/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/integrations/github"
+	"github.com/joshblazer/buggies/internal/pipeline"
+	"github.com/joshblazer/buggies/internal/policy"
+	"github.com/joshblazer/buggies/internal/store"
+	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
 )
 
 const usage = `buggies — proof, not opinion

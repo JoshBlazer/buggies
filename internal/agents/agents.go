@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/buggies-dev/kernel/finding"
-	"github.com/buggies-dev/kernel/router"
-	"github.com/buggies-dev/kernel/sandbox"
-	"github.com/buggies-dev/kernel/triad"
+	"github.com/joshblazer/kernel/finding"
+	"github.com/joshblazer/kernel/router"
+	"github.com/joshblazer/kernel/sandbox"
+	"github.com/joshblazer/kernel/triad"
 )
 
 // Purposes are the router labels the policy maps to cascade tiers.

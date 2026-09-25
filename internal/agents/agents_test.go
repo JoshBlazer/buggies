@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buggies-dev/kernel/finding"
-	"github.com/buggies-dev/kernel/router"
-	"github.com/buggies-dev/kernel/sandbox"
-	"github.com/buggies-dev/kernel/triad"
+	"github.com/joshblazer/kernel/finding"
+	"github.com/joshblazer/kernel/router"
+	"github.com/joshblazer/kernel/sandbox"
+	"github.com/joshblazer/kernel/triad"
 )
 
 // scripted returns canned model output per purpose and records tiers.

@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/buggies-dev/kernel/finding"
+	"github.com/joshblazer/kernel/finding"
 )
 
 func TestThrottleNeedsSampleBeforeSuppressing(t *testing.T) {

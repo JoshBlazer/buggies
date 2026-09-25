@@ -17,7 +17,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/buggies-dev/kernel/finding"
+	"github.com/joshblazer/kernel/finding"
 )
 
 // Store is a finding.Store on SQLite. Only the columns needed to filter and

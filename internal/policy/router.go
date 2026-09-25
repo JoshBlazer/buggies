@@ -5,11 +5,11 @@ import (
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/buggies-dev/kernel/router"
-	"github.com/buggies-dev/kernel/router/filecache"
-	anthropicprov "github.com/buggies-dev/kernel/router/providers/anthropic"
+	"github.com/joshblazer/kernel/router"
+	"github.com/joshblazer/kernel/router/filecache"
+	anthropicprov "github.com/joshblazer/kernel/router/providers/anthropic"
 
-	"github.com/buggies-dev/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/agents"
 )
 
 // TriadTiers is where each triad purpose runs. Proposing and attacking are

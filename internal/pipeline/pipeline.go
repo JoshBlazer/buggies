@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/buggies-dev/kernel/finding"
-	"github.com/buggies-dev/kernel/graph"
-	"github.com/buggies-dev/kernel/sandbox"
-	"github.com/buggies-dev/kernel/sandbox/adapter"
-	"github.com/buggies-dev/kernel/triad"
+	"github.com/joshblazer/kernel/finding"
+	"github.com/joshblazer/kernel/graph"
+	"github.com/joshblazer/kernel/sandbox"
+	"github.com/joshblazer/kernel/sandbox/adapter"
+	"github.com/joshblazer/kernel/triad"
 
-	"github.com/buggies-dev/buggies/internal/agents"
-	"github.com/buggies-dev/buggies/internal/policy"
+	"github.com/joshblazer/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/policy"
 )
 
 // KernelVersion is stamped on every finding for audit. Kept in sync with

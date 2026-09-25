@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/buggies-dev/kernel/finding"
-	"github.com/buggies-dev/kernel/sandbox"
+	"github.com/joshblazer/kernel/finding"
+	"github.com/joshblazer/kernel/sandbox"
 )
 
 func sample(id string, conf finding.Confidence, imp finding.Impact) finding.Finding {

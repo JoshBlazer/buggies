@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/buggies-dev/kernel/finding"
+	"github.com/joshblazer/kernel/finding"
 )
 
 // Comment is one inline PR comment, anchored to a line on the head side.
