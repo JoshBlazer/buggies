@@ -109,7 +109,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	// With a PAT the token is set here; a GitHub App client leaves Token empty
+	// and lets its installation-token transport inject Authorization instead.
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if in != nil {
