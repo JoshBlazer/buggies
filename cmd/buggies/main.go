@@ -35,6 +35,8 @@ usage:
   buggies review --repo <path> --name owner/repo --base <rev> --head <rev> [--post owner/repo#N] [--json]
   buggies index  --repo <path> --name owner/repo
   buggies radius --repo <path> --name owner/repo --base <rev> --head <rev>
+  buggies mcp    --name owner/repo [--repo <path>]
+  buggies serve  [--addr :8080]
   buggies version
 
 Only reproduced findings are shown as findings. Everything else is discarded.
@@ -44,6 +46,13 @@ environment:
   GITHUB_TOKEN             required for --post
   BUGGIES_DATA             data directory (default ~/.buggies)
   BUGGIES_ALLOW_RUNC=1     development only: run the sandbox on runc when gVisor is absent
+
+  serve (unattended GitHub App):
+  BUGGIES_WEBHOOK_SECRET   the App's webhook secret (required)
+  BUGGIES_GITHUB_APP_ID    the App's numeric id (required)
+  BUGGIES_GITHUB_APP_KEY   path to the App's private key PEM (required)
+  BUGGIES_GITHUB_HOST      GitHub host (default github.com)
+  BUGGIES_BUDGET_CENTS     per-repo monthly spend cap in cents (0 = no cap)
 `
 
 func main() {
@@ -66,6 +75,8 @@ func main() {
 		err = radius(ctx, os.Args[2:])
 	case "mcp":
 		err = mcpCmd(ctx, os.Args[2:])
+	case "serve":
+		err = serveCmd(ctx, os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -76,7 +87,9 @@ func main() {
 	}
 }
 
-func dataDir(name string) (string, error) {
+// dataRoot is the top-level data directory shared across repositories (queue,
+// budget ledger). Per-repo data lives under dataDir(name).
+func dataRoot() (string, error) {
 	d := os.Getenv("BUGGIES_DATA")
 	if d == "" {
 		home, err := os.UserHomeDir()
@@ -85,7 +98,15 @@ func dataDir(name string) (string, error) {
 		}
 		d = filepath.Join(home, ".buggies")
 	}
-	d = filepath.Join(d, strings.ReplaceAll(name, "/", "__"))
+	return d, os.MkdirAll(d, 0o700)
+}
+
+func dataDir(name string) (string, error) {
+	root, err := dataRoot()
+	if err != nil {
+		return "", err
+	}
+	d := filepath.Join(root, strings.ReplaceAll(name, "/", "__"))
 	return d, os.MkdirAll(d, 0o700)
 }
 

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -33,4 +34,19 @@ func NewInstallationClient(cfg AppConfig) (*Client, error) {
 	return &Client{
 		HTTP: &http.Client{Transport: tr, Timeout: 30 * time.Second},
 	}, nil
+}
+
+// InstallationToken mints a short-lived installation access token for cfg. The
+// unattended worker embeds it in a clone URL to fetch a private repo's PR head;
+// it expires on its own (≈1h), so it is never persisted. Callers mint one per
+// job rather than caching across repos.
+func (cfg AppConfig) InstallationToken(ctx context.Context) (string, error) {
+	if cfg.AppID == 0 || cfg.InstallationID == 0 || len(cfg.PrivateKeyPEM) == 0 {
+		return "", fmt.Errorf("github: AppConfig needs AppID, InstallationID and PrivateKeyPEM")
+	}
+	tr, err := ghinstallation.New(http.DefaultTransport, cfg.AppID, cfg.InstallationID, cfg.PrivateKeyPEM)
+	if err != nil {
+		return "", fmt.Errorf("github: installation transport: %w", err)
+	}
+	return tr.Token(ctx)
 }

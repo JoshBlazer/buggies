@@ -59,6 +59,17 @@ func (p ModelPolicy) Model(tier router.Tier, _ string) (router.Provider, string,
 // The default is on-device so a run needs no secret; set the env var to
 // "anthropic" to use the API once a key is provisioned.
 func NewRouter(cacheDir string) *router.Router {
+	return NewRouterEnv(cacheDir, nil)
+}
+
+// NewRouterEnv is NewRouter with an explicit environment for the on-device
+// model subprocess. The unattended worker passes a secret-scrubbed environment
+// (internal/security.ForkSafeEnv) for fork PRs, so untrusted fork code reviewed
+// through the CLI backend can never read Buggies' tokens. env is ignored by the
+// "anthropic" backend (it talks to the API in-process, not a subprocess); a
+// fork review on that backend must instead run with secrets already absent from
+// the process. A nil env inherits the parent's (the trusted, same-repo path).
+func NewRouterEnv(cacheDir string, env []string) *router.Router {
 	var provider router.Provider
 	switch os.Getenv("BUGGIES_MODEL_BACKEND") {
 	case "anthropic":
@@ -68,7 +79,9 @@ func NewRouter(cacheDir string) *router.Router {
 		}
 		provider = anthropicprov.New(opts...)
 	default: // "claude-cli" or unset
-		provider = claudecli.New()
+		p := claudecli.New()
+		p.Env = env
+		provider = p
 	}
 	return &router.Router{
 		Policy: ModelPolicy{Provider: provider, Cascade: DefaultCascade},

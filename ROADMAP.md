@@ -28,6 +28,8 @@ The CLI `review` proves the precision claim (M5, passed). Unattended operation �
 | **M11** | Agent skill library (one `SKILL.md` per bug class) with selective loading | corpus eval with skills on vs off → bugs caught, false alarms, cost per review for each |
 | **M12** | MCP server (`buggies mcp`, stdio) + a Claude Code `SKILL.md` for pre-PR use | start the MCP server and call every tool (blast radius, review, get finding, dismiss) → valid response each |
 
+**`buggies serve` (the M6–M12 capstone).** M6–M12 ship as libraries; `buggies serve` is the daemon that stands them up together: webhook (M6) → durable queue (M7) → worker → checkout of the PR head → review → review comment + CI check run (M8), gated by per-repo budget (M9) and running fork PRs with secrets stripped from the model subprocess (M10). The PR head is fetched via `refs/pull/<N>/head` from the base repo (`internal/checkout`), so a fork's clone URL and credentials are never needed; the head SHA is verified against the webhook's. Proven without GitHub: `go test ./internal/checkout` (head checked out at the expected SHA with the base reachable for diffing; moved-ref refused) and `go test ./internal/unattended -run ServeEndToEnd` (real HTTP server + background worker over loopback → same push delivered twice = one review, one post). The live GitHub leg (installation-token clone, posting) reuses the same `PostReview`/`UpsertCheckRun` the CLI `review --post` already exercises; it is wired, not yet run against a live installation.
+
 ## v0.5 — the read-only production connector
 
 **Ships:** read-only error-tracker connector (Sentry first). Links existing prod incidents to source. Backfills historical attribution.
