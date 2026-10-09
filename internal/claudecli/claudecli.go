@@ -27,6 +27,11 @@ type Provider struct {
 	// Bin is the claude executable; empty means "claude" on PATH (override
 	// with BUGGIES_CLAUDE_BIN).
 	Bin string
+	// Env, when non-nil, is the exact environment for the claude subprocess
+	// (as os.Environ() entries) instead of inheriting the parent's. The fork
+	// path sets this to a secret-scrubbed environment so a fork PR's review
+	// cannot read Buggies' tokens. Nil means inherit.
+	Env []string
 }
 
 var _ router.Provider = (*Provider)(nil)
@@ -92,6 +97,9 @@ func (p *Provider) Complete(ctx context.Context, model string, req router.Reques
 	}
 
 	cmd := exec.CommandContext(ctx, p.Bin, args...)
+	if p.Env != nil {
+		cmd.Env = p.Env // scrubbed env for fork PRs; nil inherits the parent's
+	}
 	cmd.Stdin = strings.NewReader(strings.Join(turns, "\n\n"))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
