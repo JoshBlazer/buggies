@@ -1,0 +1,47 @@
+# Sample systemd unit for `buggies serve`. Adjust User, paths, and the
+# environment to your host, then:
+#   sudo cp deploy/buggies.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now buggies
+# See OPERATING.md for the full setup (GitHub App, permissions, reverse proxy).
+
+[Unit]
+Description=Buggies unattended PR reviewer
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=buggies
+# The binary (build with: go build -o /usr/local/bin/buggies ./cmd/buggies)
+ExecStart=/usr/local/bin/buggies serve --addr 127.0.0.1:8080
+
+# Secrets and config. Prefer an EnvironmentFile with 0600 perms over inline
+# Environment= lines so the webhook secret is not world-readable in `systemctl show`.
+EnvironmentFile=/etc/buggies/buggies.env
+# Example /etc/buggies/buggies.env:
+#   BUGGIES_WEBHOOK_SECRET=…
+#   BUGGIES_GITHUB_APP_ID=123456
+#   BUGGIES_GITHUB_APP_KEY=/etc/buggies/app.pem
+#   BUGGIES_BUDGET_CENTS=2000
+#   BUGGIES_DATA=/var/lib/buggies
+#   # For a headless server without an interactive `claude` login, use the API:
+#   # BUGGIES_MODEL_BACKEND=anthropic
+#   # ANTHROPIC_API_KEY=…
+
+# Data directory (queue.db, budget.db, per-repo state).
+StateDirectory=buggies
+Environment=BUGGIES_DATA=/var/lib/buggies
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening (the daemon needs the Docker socket; keep the rest tight).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/buggies
+
+[Install]
+WantedBy=multi-user.target
