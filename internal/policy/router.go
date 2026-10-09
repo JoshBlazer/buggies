@@ -10,6 +10,7 @@ import (
 	anthropicprov "github.com/joshblazer/kernel/router/providers/anthropic"
 
 	"github.com/joshblazer/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/claudecli"
 )
 
 // TriadTiers is where each triad purpose runs. Proposing and attacking are
@@ -46,17 +47,31 @@ func (p ModelPolicy) Model(tier router.Tier, _ string) (router.Provider, string,
 	return nil, "", fmt.Errorf("%w: %s", router.ErrNoModel, tier)
 }
 
-// NewRouter builds the production router: Anthropic provider (API key from
-// ANTHROPIC_API_KEY or an `ant auth login` profile; BUGGIES_MODEL_BASE_URL
-// points a self-hosted deployment at its own endpoint) with a persistent
-// fingerprint cache under cacheDir.
+// NewRouter builds the production router with a persistent fingerprint cache
+// under cacheDir. The model backend is selected by BUGGIES_MODEL_BACKEND:
+//
+//   - "claude-cli" (default): the on-device Claude Code CLI. No API key, no
+//     API billing — uses whatever auth the local `claude` binary has.
+//   - "anthropic": the Anthropic API (key from ANTHROPIC_API_KEY or an
+//     `ant auth login` profile; BUGGIES_MODEL_BASE_URL points a self-hosted
+//     deployment at its own endpoint).
+//
+// The default is on-device so a run needs no secret; set the env var to
+// "anthropic" to use the API once a key is provisioned.
 func NewRouter(cacheDir string) *router.Router {
-	var opts []anthropicprov.Option
-	if u := os.Getenv("BUGGIES_MODEL_BASE_URL"); u != "" {
-		opts = append(opts, option.WithBaseURL(u))
+	var provider router.Provider
+	switch os.Getenv("BUGGIES_MODEL_BACKEND") {
+	case "anthropic":
+		var opts []anthropicprov.Option
+		if u := os.Getenv("BUGGIES_MODEL_BASE_URL"); u != "" {
+			opts = append(opts, option.WithBaseURL(u))
+		}
+		provider = anthropicprov.New(opts...)
+	default: // "claude-cli" or unset
+		provider = claudecli.New()
 	}
 	return &router.Router{
-		Policy: ModelPolicy{Provider: anthropicprov.New(opts...), Cascade: DefaultCascade},
+		Policy: ModelPolicy{Provider: provider, Cascade: DefaultCascade},
 		Cache:  &filecache.Cache{Dir: cacheDir},
 	}
 }
