@@ -15,13 +15,21 @@ import (
 )
 
 // Reviewer connects the queue to the pipeline. Review runs the pipeline for one
-// PR; Post renders and posts the result. Both are injected so the orchestration
-// is testable without GitHub or models.
+// PR; Post renders and posts the result. Budget (optional) gates a review
+// before it runs; when it denies, PostSkip explains the skip on the PR instead
+// of running the review. All are injected so the orchestration is testable
+// without GitHub or models. Self-throttle is enforced inside Review (the
+// pipeline), so throttled findings never reach Post.
 type Reviewer struct {
 	Q      *queue.Queue
 	Review func(ctx context.Context, job github.PRJob) ([]finding.Finding, error)
 	Post   func(ctx context.Context, job github.PRJob, findings []finding.Finding) error
-	Logf   func(format string, args ...any)
+	// Budget, if set, returns allow=false with a human note to skip the review
+	// (e.g. the repo is over its monthly budget).
+	Budget func(ctx context.Context, job github.PRJob) (allow bool, note string, err error)
+	// PostSkip posts the skip note to the PR. Required if Budget can deny.
+	PostSkip func(ctx context.Context, job github.PRJob, note string) error
+	Logf     func(format string, args ...any)
 }
 
 func (r *Reviewer) logf(format string, args ...any) {
@@ -58,6 +66,19 @@ func (r *Reviewer) Work(ctx context.Context) error {
 		var job github.PRJob
 		if err := json.Unmarshal(j.Payload, &job); err != nil {
 			return err
+		}
+		if r.Budget != nil {
+			allow, note, err := r.Budget(ctx, job)
+			if err != nil {
+				return err
+			}
+			if !allow {
+				r.logf("budget: skipping %s #%d: %s", repoName(job), job.Number, note)
+				if r.PostSkip != nil {
+					return r.PostSkip(ctx, job, note)
+				}
+				return nil
+			}
 		}
 		findings, err := r.Review(ctx, job)
 		if err != nil {

@@ -100,6 +100,53 @@ func TestReplayedWebhookReviewsAndCommentsOnce(t *testing.T) {
 	}
 }
 
+// TestOverBudgetSkipsAndPostsNote is the M9 exit check: a repo past budget is
+// not reviewed; a skip note is posted instead.
+func TestOverBudgetSkipsAndPostsNote(t *testing.T) {
+	q, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+
+	var reviews, skips atomic.Int64
+	var gotNote string
+	r := &Reviewer{
+		Q:      q,
+		Review: func(context.Context, github.PRJob) ([]finding.Finding, error) { reviews.Add(1); return nil, nil },
+		Post:   func(context.Context, github.PRJob, []finding.Finding) error { return nil },
+		Budget: func(context.Context, github.PRJob) (bool, string, error) {
+			return false, "monthly budget reached ($5.00 of $5.00 for 2026-10)", nil
+		},
+		PostSkip: func(_ context.Context, _ github.PRJob, note string) error {
+			skips.Add(1)
+			gotNote = note
+			return nil
+		},
+	}
+	ctx := context.Background()
+	if err := r.OnPR(ctx, github.PRJob{Owner: "tj", Repo: "commander.js", HeadSHA: "ccc", DeliveryID: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if reviews.Load() != 0 {
+		t.Errorf("reviews = %d, want 0 (over budget)", reviews.Load())
+	}
+	if skips.Load() != 1 {
+		t.Errorf("skip notes = %d, want 1", skips.Load())
+	}
+	if gotNote == "" {
+		t.Error("skip note empty; the PR must say why it was skipped")
+	}
+	// The job is consumed (completed), not left to retry forever.
+	if n, _ := q.Count(ctx, queue.Done); n != 1 {
+		t.Errorf("done = %d, want 1", n)
+	}
+}
+
 // TestNewHeadReReviews confirms a genuinely new push (new head) is a new job.
 func TestNewHeadReReviews(t *testing.T) {
 	q, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))
