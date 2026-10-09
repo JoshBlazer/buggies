@@ -20,6 +20,8 @@ import (
 	"github.com/joshblazer/kernel/sandbox/runtime"
 
 	"github.com/joshblazer/buggies/internal/agents"
+	"github.com/joshblazer/buggies/internal/agents/skills"
+	"github.com/joshblazer/buggies/internal/claudecli"
 	"github.com/joshblazer/buggies/internal/integrations/github"
 	"github.com/joshblazer/buggies/internal/pipeline"
 	"github.com/joshblazer/buggies/internal/policy"
@@ -62,6 +64,8 @@ func main() {
 		err = index(ctx, os.Args[2:])
 	case "radius":
 		err = radius(ctx, os.Args[2:])
+	case "mcp":
+		err = mcpCmd(ctx, os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -164,13 +168,21 @@ func review(ctx context.Context, args []string) error {
 	}
 
 	rt := policy.NewRouter(filepath.Join(dd, "model-cache"))
+	ag := &agents.Agents{Router: rt, Tiers: policy.TriadTiers, MaxCandidates: policy.MaxCandidates}
+	if os.Getenv("BUGGIES_SKILLS") != "off" {
+		sk, err := skills.Load()
+		if err != nil {
+			return err
+		}
+		ag.Skills = sk
+	}
 	p := &pipeline.Pipeline{
 		Repo:     *name,
 		Root:     root,
 		Graph:    g,
 		Executor: ex,
 		Adapter:  node.Adapter{},
-		Agents:   &agents.Agents{Router: rt, Tiers: policy.TriadTiers, MaxCandidates: policy.MaxCandidates},
+		Agents:   ag,
 		Store:    st,
 		Throttled: func(ctx context.Context, typ finding.Type) (bool, error) {
 			d, n, err := st.DismissalRate(ctx, *name, typ)
@@ -186,6 +198,13 @@ func review(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "review finished in %s: %d reproduced finding(s), %d throttled, %d candidate(s) discarded\n",
 		res.Elapsed.Round(1e9), len(res.Findings), len(res.Throttled), len(res.Traces)-len(res.Findings)-len(res.Throttled))
+	if calls, cost := claudecli.Usage(); calls > 0 {
+		skillState := "on"
+		if os.Getenv("BUGGIES_SKILLS") == "off" {
+			skillState = "off"
+		}
+		fmt.Fprintf(os.Stderr, "model (on-device): %d call(s), $%.4f; skills %s\n", calls, cost, skillState)
+	}
 
 	var comments []prcomment.Comment
 	for _, f := range res.Findings {

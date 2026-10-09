@@ -13,6 +13,8 @@ import (
 	"github.com/joshblazer/kernel/router"
 	"github.com/joshblazer/kernel/sandbox"
 	"github.com/joshblazer/kernel/triad"
+
+	"github.com/joshblazer/buggies/internal/agents/skills"
 )
 
 // Purposes are the router labels the policy maps to cascade tiers.
@@ -38,6 +40,23 @@ type Agents struct {
 	Tiers  Tiers
 	// MaxCandidates caps what the proposer may return. Conservative by design.
 	MaxCandidates int
+	// Skills, if set, supplies per-bug-class reproduction guidance. Only the
+	// skill matching a candidate's type is injected, into the attack and prove
+	// prompts — never all skills into every prompt. Nil means skills off.
+	Skills skills.Set
+}
+
+// skillFor returns the skill block for a candidate's type, or "" when skills
+// are off or none matches.
+func (a *Agents) skillFor(typ finding.Type) string {
+	if a.Skills == nil {
+		return ""
+	}
+	sk, ok := a.Skills.For(typ)
+	if !ok {
+		return ""
+	}
+	return "\n\n## Reproduction skill: " + sk.Name + "\n" + sk.Body
 }
 
 // Proposer returns the propose agent.
@@ -157,7 +176,7 @@ Kill it if any of these hold:
 
 If the claim survives, say precisely which input exposes it and what the wrong output is, so the prover can write the test.
 
-Output: {"survives":true|false,"reason":"one or two sentences"}`
+Output: {"survives":true|false,"reason":"one or two sentences"}` + s.a.skillFor(c.Type)
 
 	user := renderScope(scope) + "\n\n## Claim under attack\n" + renderCandidate(c)
 	resp, err := s.a.Router.Call(ctx, s.a.Tiers.Attack, router.Request{
@@ -201,7 +220,7 @@ Rules:
 - fix_diff is a minimal unified diff against the head revision that makes the test pass. It may be empty if you are not confident.
 - If a previous attempt is shown with its sandbox output, fix what went wrong: an "errored" outcome means the test could not run (imports, syntax, runner) - repair that; a "passed" outcome means the assertion did not expose the defect - reconsider the inputs, or return an empty test if the defect is not real.
 
-Output: {"test_path":"path/__buggies__/name.test.ts","test":"full file contents","fix_diff":"unified diff or empty"}`
+Output: {"test_path":"path/__buggies__/name.test.ts","test":"full file contents","fix_diff":"unified diff or empty"}` + p.a.skillFor(c.Type)
 
 	var sb strings.Builder
 	sb.WriteString(renderScope(scope))

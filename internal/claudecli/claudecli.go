@@ -15,9 +15,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 
 	"github.com/joshblazer/kernel/router"
 )
@@ -47,14 +49,38 @@ func New() *Provider {
 
 // result is the subset of `claude -p --output-format json` we consume.
 type result struct {
-	Result  string `json:"result"`
-	IsError bool   `json:"is_error"`
-	Subtype string `json:"subtype"`
-	APIErr  string `json:"api_error_status"`
-	Usage   struct {
+	Result   string  `json:"result"`
+	IsError  bool    `json:"is_error"`
+	Subtype  string  `json:"subtype"`
+	APIErr   string  `json:"api_error_status"`
+	CostUSD  float64 `json:"total_cost_usd"`
+	Usage    struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+// Process-wide usage, so a review can report what it spent on-device. The
+// router holds one provider per run, so these sum one review's calls.
+var (
+	totalCalls   atomic.Int64
+	totalCostUSD atomic.Uint64 // float64 bits
+)
+
+// Usage returns the number of CLI calls and total USD cost since process start.
+func Usage() (calls int64, costUSD float64) {
+	return totalCalls.Load(), math.Float64frombits(totalCostUSD.Load())
+}
+
+func addCost(c float64) {
+	totalCalls.Add(1)
+	for {
+		old := totalCostUSD.Load()
+		nw := math.Float64bits(math.Float64frombits(old) + c)
+		if totalCostUSD.CompareAndSwap(old, nw) {
+			return
+		}
+	}
 }
 
 // Complete implements router.Provider by shelling out to `claude -p`.
@@ -120,6 +146,7 @@ func (p *Provider) Complete(ctx context.Context, model string, req router.Reques
 		return router.Response{}, fmt.Errorf("claudecli: run failed: %s", strings.TrimSpace(msg))
 	}
 
+	addCost(r.CostUSD)
 	return router.Response{
 		Text:         r.Result,
 		Model:        model,
