@@ -30,7 +30,6 @@ import (
 	"github.com/joshblazer/buggies/internal/security"
 	"github.com/joshblazer/buggies/internal/store"
 	"github.com/joshblazer/buggies/internal/surfaces/checkrun"
-	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
 	"github.com/joshblazer/buggies/internal/unattended"
 )
 
@@ -148,18 +147,8 @@ func serveCmd(ctx context.Context, args []string) error {
 			}
 			cl.BaseURL = apiBase
 			pr := github.PR{Owner: job.Owner, Repo: job.Repo, Number: job.Number}
-			var comments []prcomment.Comment
-			for _, f := range fs {
-				comments = append(comments, prcomment.Render(f))
-			}
-			url, err := cl.PostReview(ctx, pr, job.HeadSHA, prcomment.Summary(fs), comments)
+			url, err := unattended.Publish(ctx, cl, pr, job.HeadSHA, fs)
 			if err != nil {
-				return err
-			}
-			cr := checkrun.Render(fs)
-			if _, err := cl.UpsertCheckRun(ctx, pr, github.CheckRun{
-				Name: cr.Name, HeadSHA: job.HeadSHA, Conclusion: cr.Conclusion, Title: cr.Title, Summary: cr.Summary,
-			}); err != nil {
 				return err
 			}
 			logf("posted %s #%d: %s", pr.Owner+"/"+pr.Repo, pr.Number, url)
