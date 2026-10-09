@@ -14,6 +14,20 @@ The phases of production, and — more importantly — what each phase *proves*.
 
 **Explicitly deferred:** production loop, security type, full-app sandbox, additional languages, merge gating.
 
+### v0 unattended delivery (M6–M12) — finishing the left door
+
+The CLI `review` proves the precision claim (M5, passed). Unattended operation — review every PR on an installed repo with nobody at the keyboard — is the rest of v0's left door. All shell (Buggies integrations/surfaces/policy), built in dependency order, each with an exit check.
+
+| M | Ships | Exit check |
+|---|-------|-----------|
+| **M6** | GitHub App webhook intake: receiver, HMAC signature verify, installation-token auth | `go test ./internal/integrations/github -run Webhook` — signed delivery → 200 + parsed PR job; tampered signature → 401 |
+| **M7** | Durable SQLite job queue + idempotency (delivery-id + head-sha); comment update-in-place | integration test replays the same recorded webhook twice → asserts one review and one comment |
+| **M8** | Check-run surface alongside the PR comment; CI-gate conclusion; update-in-place | post then re-run → one check run, updated not duplicated; conclusion = failure iff reproduced × (data-loss\|exploitable) |
+| **M9** | Per-repo spend budget + "skipped for budget" PR note; self-throttle on the unattended path | drive a repo past budget → review skipped, note posted, throttle respected |
+| **M10** | Untrusted-input hardening (all PR text treated as data) + fork-PR secret isolation | injection-fixture PR → findings identical with and without injected instructions; fork PR → no token in agent/sandbox env |
+| **M11** | Agent skill library (one `SKILL.md` per bug class) with selective loading | corpus eval with skills on vs off → bugs caught, false alarms, cost per review for each |
+| **M12** | MCP server (`buggies mcp`, stdio) + a Claude Code `SKILL.md` for pre-PR use | start the MCP server and call every tool (blast radius, review, get finding, dismiss) → valid response each |
+
 ## v0.5 — the read-only production connector
 
 **Ships:** read-only error-tracker connector (Sentry first). Links existing prod incidents to source. Backfills historical attribution.

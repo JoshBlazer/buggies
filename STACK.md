@@ -67,6 +67,16 @@ Layer existing tools *under* the LLM so the model isn't asked to rediscover what
 - **Error trackers (right door):** Sentry first (largest developer footprint), then Datadog, Bugsnag, generic OpenTelemetry. All read-only.
 - **CI:** a status check / gate that reports the binary "reproduced blocking finding: yes/no."
 
+### Unattended delivery dependencies (added for M6–M12)
+
+Following the buy-or-borrow principle (§1): don't hand-roll GitHub App auth or the MCP wire protocol.
+
+- **GitHub App auth:** `github.com/google/go-github` + `github.com/bradleyfalzon/ghinstallation` — installation-token minting and the REST surface (PRs, comments, check runs). HMAC webhook-signature verification is stdlib `crypto/hmac`; no dep.
+- **Durable job queue:** an embedded **SQLite-backed** queue reusing the finding store's existing driver — no Redis/SQS/broker, because a hosted broker breaks the self-host-from-day-one principle (§4). The webhook enqueues; a worker drains; idempotency keys are delivery-id and head-sha.
+- **MCP server:** `github.com/modelcontextprotocol/go-sdk` for the `buggies mcp` stdio server. Tools: blast radius, review a diff, fetch a finding + reproduction by stable ID, dismiss a finding.
+- **Agent skills:** `gopkg.in/yaml.v3` to parse `SKILL.md` frontmatter (`name`, `description`). One directory per bug class under `internal/agents/skills/`; the pipeline loads only the skills matching a candidate, so agents don't carry every instruction in every prompt.
+- **Untrusted input:** no dependency. All PR-derived text (diff, filenames, commit messages, comments) is wrapped as data in a structured envelope in the agent prompts — never interpolated as instructions — and fork PRs run with no installation token or repo secrets reaching the sandbox or agents.
+
 ## Deployment modes
 
 - **Hosted SaaS** for the mid-market default.
