@@ -243,6 +243,7 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 	return res.Findings, nil
 }
 
+// short abbreviates a commit SHA to 12 characters for log lines.
 func short(sha string) string {
 	if len(sha) > 12 {
 		return sha[:12]
