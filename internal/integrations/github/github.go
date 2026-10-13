@@ -81,7 +81,7 @@ func (c *Client) PostReview(ctx context.Context, pr PR, headSHA, summary string,
 		Body     string      `json:"body"`
 		Event    string      `json:"event"`
 		Comments []ghComment `json:"comments"`
-	}{CommitID: headSHA, Body: summary, Event: "COMMENT"}
+	}{CommitID: headSHA, Body: summary, Event: "COMMENT", Comments: []ghComment{}}
 	for _, cm := range comments {
 		body.Comments = append(body.Comments, ghComment{Path: cm.Path, Line: cm.Line, Side: "RIGHT", Body: cm.Body})
 	}
