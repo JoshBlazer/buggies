@@ -109,6 +109,37 @@ func TestWebhookNonReviewableActionAckedNotDispatched(t *testing.T) {
 	}
 }
 
+// TestForkDetection pins the trust boundary: Fork is true only when the head
+// is a different repo than the base, regardless of whether the base repo is
+// itself a GitHub fork, and fails closed when the head repo is absent.
+func TestForkDetection(t *testing.T) {
+	cases := []struct {
+		name     string
+		headRepo string // replaces the head "repo" object
+		want     bool
+	}{
+		{"same repo, base not a fork", `"repo": { "full_name": "tj/commander.js", "fork": false }`, false},
+		// The exact false-positive this fix removes: owner's own branch->master
+		// PR on a repo that is itself a GitHub fork. Same repo => trusted.
+		{"same repo, base IS a fork", `"repo": { "full_name": "tj/commander.js", "fork": true }`, false},
+		{"cross-repo PR from a fork", `"repo": { "full_name": "stranger/commander.js", "fork": true }`, true},
+		{"head repo deleted (null) => fail closed", `"repo": null`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(recordedDelivery,
+				`"repo": { "full_name": "tj/commander.js", "fork": false }`, tc.headRepo, 1)
+			job, ok, err := ParsePullRequest([]byte(body))
+			if err != nil || !ok {
+				t.Fatalf("ParsePullRequest ok=%v err=%v", ok, err)
+			}
+			if job.Fork != tc.want {
+				t.Fatalf("Fork = %v, want %v", job.Fork, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifySignatureRejectsEmptySecretAndJunk(t *testing.T) {
 	if VerifySignature(nil, []byte("x"), sign(testSecret, "x")) {
 		t.Error("empty secret must never verify")

@@ -97,9 +97,17 @@ func ParsePullRequest(body []byte) (job PRJob, ok bool, err error) {
 	if e.Repository.Owner.Login == "" || e.Repository.Name == "" || e.Number == 0 {
 		return PRJob{}, false, fmt.Errorf("github: pull_request payload missing repo/number")
 	}
-	fork := e.PullRequest.Head.Repo.Fork ||
-		(e.PullRequest.Head.Repo.FullName != "" &&
-			e.PullRequest.Head.Repo.FullName != e.Repository.Owner.Login+"/"+e.Repository.Name)
+	// A PR is untrusted ("fork") when its head is a different repository than
+	// the base — the case where a stranger's code reaches us. We do NOT use
+	// Head.Repo.Fork: that flag is true whenever the base repo is itself a
+	// GitHub fork of some upstream, which says nothing about whether THIS PR
+	// crosses a repo boundary, and would wrongly flag the owner's own
+	// branch->master PRs as hostile. Fail closed when the head repo is absent
+	// (GitHub sends head.repo = null for a deleted fork): if we cannot confirm
+	// head and base are the same repo, treat it as untrusted.
+	base := e.Repository.Owner.Login + "/" + e.Repository.Name
+	fork := e.PullRequest.Head.Repo.FullName == "" ||
+		e.PullRequest.Head.Repo.FullName != base
 	return PRJob{
 		Action:         e.Action,
 		Owner:          e.Repository.Owner.Login,
