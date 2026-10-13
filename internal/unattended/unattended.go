@@ -7,12 +7,21 @@ package unattended
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/joshblazer/kernel/finding"
 
 	"github.com/joshblazer/buggies/internal/integrations/github"
 	"github.com/joshblazer/buggies/internal/queue"
 )
+
+// SkipReview, when returned by Review, tells Work to skip the job (post a
+// neutral note via PostSkip) instead of marking it failed. Use it for
+// conditions that are not transient errors to retry — e.g. the repository's
+// ecosystem is not one Buggies can reproduce in the sandbox.
+type SkipReview struct{ Note string }
+
+func (e *SkipReview) Error() string { return "skip: " + e.Note }
 
 // Reviewer connects the queue to the pipeline. Review runs the pipeline for one
 // PR; Post renders and posts the result. Budget (optional) gates a review
@@ -82,6 +91,14 @@ func (r *Reviewer) Work(ctx context.Context) error {
 		}
 		findings, err := r.Review(ctx, job)
 		if err != nil {
+			var skip *SkipReview
+			if errors.As(err, &skip) {
+				r.logf("skipping %s #%d: %s", repoName(job), job.Number, skip.Note)
+				if r.PostSkip != nil {
+					return r.PostSkip(ctx, job, skip.Note)
+				}
+				return nil
+			}
 			return err
 		}
 		return r.Post(ctx, job, findings)

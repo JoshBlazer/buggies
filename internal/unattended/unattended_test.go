@@ -147,6 +147,52 @@ func TestOverBudgetSkipsAndPostsNote(t *testing.T) {
 	}
 }
 
+// TestReviewSkipPostsNeutralNote proves a Review that returns *SkipReview (e.g.
+// an unsupported ecosystem) is not a failure: Post is never called, PostSkip
+// posts the reason, and the job is consumed rather than retried forever.
+func TestReviewSkipPostsNeutralNote(t *testing.T) {
+	q, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+
+	var posts, skips atomic.Int64
+	var gotNote string
+	r := &Reviewer{
+		Q: q,
+		Review: func(context.Context, github.PRJob) ([]finding.Finding, error) {
+			return nil, &SkipReview{Note: "unsupported ecosystem (node only)"}
+		},
+		Post: func(context.Context, github.PRJob, []finding.Finding) error { posts.Add(1); return nil },
+		PostSkip: func(_ context.Context, _ github.PRJob, note string) error {
+			skips.Add(1)
+			gotNote = note
+			return nil
+		},
+	}
+	ctx := context.Background()
+	if err := r.OnPR(ctx, github.PRJob{Owner: "me", Repo: "goproj", HeadSHA: "ccc", DeliveryID: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Work(ctx); err != nil {
+		t.Fatalf("Work returned error for a skip (should be consumed, not failed): %v", err)
+	}
+
+	if posts.Load() != 0 {
+		t.Errorf("Post called %d time(s), want 0 on a skip", posts.Load())
+	}
+	if skips.Load() != 1 {
+		t.Errorf("skip notes = %d, want 1", skips.Load())
+	}
+	if gotNote != "unsupported ecosystem (node only)" {
+		t.Errorf("skip note = %q, want the reason to reach the PR", gotNote)
+	}
+	if n, _ := q.Count(ctx, queue.Done); n != 1 {
+		t.Errorf("done = %d, want 1 (skip consumes the job)", n)
+	}
+}
+
 // TestNewHeadReReviews confirms a genuinely new push (new head) is a new job.
 func TestNewHeadReReviews(t *testing.T) {
 	q, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))

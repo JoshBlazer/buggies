@@ -27,6 +27,19 @@ import (
 // go.mod by hand until the kernel is published.
 const KernelVersion = "v0.1.0+dev"
 
+// ErrUnsupportedProject reports that the repository is not a project of the
+// configured adapter's ecosystem, so the sandbox reproduction cannot run. This
+// is not a review failure to retry: callers should skip the PR (e.g. post a
+// neutral note) rather than treat it as an error.
+type ErrUnsupportedProject struct {
+	Root      string
+	Ecosystem sandbox.Ecosystem
+}
+
+func (e *ErrUnsupportedProject) Error() string {
+	return fmt.Sprintf("repository at %s is not a %s project", e.Root, e.Ecosystem)
+}
+
 // Pipeline wires the kernel components with Buggies' policy.
 type Pipeline struct {
 	Repo     string // "owner/name", used in finding IDs
@@ -101,7 +114,7 @@ func (p *Pipeline) Review(ctx context.Context, base, head string) (Result, error
 		return res, err
 	}
 	if !det.Matched {
-		return res, fmt.Errorf("repository at %s is not a %s project", p.Root, p.Adapter.Ecosystem())
+		return res, &ErrUnsupportedProject{Root: p.Root, Ecosystem: p.Adapter.Ecosystem()}
 	}
 	scope := triad.Scope{
 		Repo:      p.Repo,

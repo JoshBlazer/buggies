@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -128,6 +129,12 @@ func serveCmd(ctx context.Context, args []string) error {
 			callsBefore, costBefore := claudecli.Usage()
 			fs, err := serveReview(ctx, name, treeRoot, dd, job.BaseSHA, job.HeadSHA, env)
 			if err != nil {
+				// An unsupported ecosystem is not a failure to retry: skip the PR
+				// with a neutral note rather than silently marking the job failed.
+				var unsupported *pipeline.ErrUnsupportedProject
+				if errors.As(err, &unsupported) {
+					return nil, &unattended.SkipReview{Note: "unsupported ecosystem (" + string(unsupported.Ecosystem) + " only)"}
+				}
 				return nil, err
 			}
 			if _, costAfter := claudecli.Usage(); costAfter > costBefore {
