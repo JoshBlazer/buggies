@@ -40,6 +40,19 @@ func (e *ErrUnsupportedProject) Error() string {
 	return fmt.Sprintf("repository at %s is not a %s project", e.Root, e.Ecosystem)
 }
 
+// ErrDiffTooLarge reports that a PR changed more files than the reviewer takes
+// on in one pass. A sweeping change (a dependency bump, a generated-file churn,
+// a mass rename) is slow and low-signal to review and would burn the budget, so
+// callers skip it with a neutral note rather than treat it as a failure.
+type ErrDiffTooLarge struct{ Files, Limit int }
+
+func (e *ErrDiffTooLarge) Error() string {
+	return fmt.Sprintf("diff too large: %d files changed (limit %d)", e.Files, e.Limit)
+}
+
+// DefaultMaxChangedFiles is the out-of-the-box cap on a PR's changed-file count.
+const DefaultMaxChangedFiles = 60
+
 // Pipeline wires the kernel components with Buggies' policy.
 type Pipeline struct {
 	Repo     string // "owner/name", used in finding IDs
@@ -58,6 +71,9 @@ type Pipeline struct {
 	RadiusDepth int
 	// MaxContextBytes caps the rendered blast-radius source shown to agents.
 	MaxContextBytes int
+	// MaxChangedFiles caps how many changed files a PR may have before it is
+	// skipped as too large (ErrDiffTooLarge). Zero means DefaultMaxChangedFiles.
+	MaxChangedFiles int
 }
 
 // Result is what a review produced.
@@ -91,6 +107,15 @@ func (p *Pipeline) Review(ctx context.Context, base, head string) (Result, error
 		p.logf("no reviewable changes between %s and %s", base, head)
 		res.Elapsed = time.Since(start)
 		return res, nil
+	}
+	// Guard against sweeping PRs before paying for indexing and the triad: a
+	// change touching dozens of files is slow and low-signal to reproduce.
+	maxFiles := p.MaxChangedFiles
+	if maxFiles <= 0 {
+		maxFiles = DefaultMaxChangedFiles
+	}
+	if len(changedFiles) > maxFiles {
+		return res, &ErrDiffTooLarge{Files: len(changedFiles), Limit: maxFiles}
 	}
 	diff, err := p.git(ctx, "diff", "-U3", "--no-color", base, head, "--")
 	if err != nil {
