@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joshblazer/kernel/finding"
@@ -172,9 +174,38 @@ func serveCmd(ctx context.Context, args []string) error {
 			})
 			return err
 		},
+		// Data-deletion-on-uninstall: when a tenant removes Buggies from a repo,
+		// GitHub stops authorizing it for that code, so Buggies erases what it
+		// held — the per-repo state directory (graph, findings, store key,
+		// model cache) and every queued/historical job for that repo.
+		Uninstall: func(ctx context.Context, repos []string) error {
+			for _, name := range repos {
+				dir := filepath.Join(root, strings.ReplaceAll(name, "/", "__"))
+				if err := os.RemoveAll(dir); err != nil {
+					logf("uninstall: purge %s data: %v", name, err)
+				}
+				if n, err := q.PurgeRepo(ctx, name); err != nil {
+					logf("uninstall: purge %s jobs: %v", name, err)
+				} else {
+					logf("uninstall: purged %s (%d job(s))", name, n)
+				}
+			}
+			return nil
+		},
 	}
 
 	server := unattended.NewServer([]byte(secret), r)
+	// Readiness reflects the real blocker: can the isolation runtime be reached?
+	// A review cannot run without it, so /readyz goes red when the sandbox is
+	// down — an orchestrator should hold traffic rather than let the daemon post
+	// "sandbox unavailable" checks. Liveness (/healthz) stays up regardless.
+	server.Ready = func(ctx context.Context) error {
+		ex := &runtime.Docker{Egress: &runtime.Egress{}, Log: io.Discard}
+		if os.Getenv("BUGGIES_ALLOW_RUNC") == "1" {
+			ex.Runtime, ex.AllowRunc = "runc", true
+		}
+		return ex.CheckRuntime(ctx)
+	}
 	go server.Run(ctx, *interval)
 
 	// Admin dashboard (JSON API + static SPA) on a SEPARATE loopback listener,
@@ -271,6 +302,10 @@ func classifyReviewError(err error) error {
 	if errors.Is(err, errSandboxUnavailable) {
 		return &unattended.SkipReview{Note: "sandbox unavailable — Buggies could not reach its isolation runtime, so the review did not run; re-run it once the sandbox is restored"}
 	}
+	var tooLarge *pipeline.ErrDiffTooLarge
+	if errors.As(err, &tooLarge) {
+		return &unattended.SkipReview{Note: fmt.Sprintf("diff too large to review (%d files changed, limit %d) — split the PR for a review", tooLarge.Files, tooLarge.Limit)}
+	}
 	var unsupported *pipeline.ErrUnsupportedProject
 	if errors.As(err, &unsupported) {
 		note := "no supported ecosystem (Node or Python) detected"
@@ -349,7 +384,9 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 			d, n, err := st.DismissalRate(ctx, name, typ)
 			return policy.DefaultThrottle.Suppress(typ, d, n), err
 		},
-		Limits: pipeline.DefaultLimits(), Log: os.Stderr,
+		Limits:          pipeline.DefaultLimits(),
+		Log:             os.Stderr,
+		MaxChangedFiles: envIntOr("BUGGIES_MAX_CHANGED_FILES", 0),
 	}
 	res, err := p.Review(ctx, base, head)
 	if err != nil {
@@ -393,6 +430,16 @@ func short(sha string) string {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envIntOr reads key as an int, falling back to def when unset or unparseable.
+func envIntOr(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

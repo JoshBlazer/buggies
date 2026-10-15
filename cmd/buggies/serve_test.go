@@ -102,6 +102,13 @@ func TestClassifyReviewError(t *testing.T) {
 		}
 	})
 
+	t.Run("over-large diff becomes a neutral skip", func(t *testing.T) {
+		skip := asSkip(t, classifyReviewError(&pipeline.ErrDiffTooLarge{Files: 200, Limit: 60}))
+		if !strings.Contains(skip.Note, "200") || !strings.Contains(skip.Note, "too large") {
+			t.Fatalf("note = %q, want it to mention the size", skip.Note)
+		}
+	})
+
 	t.Run("a generic error is returned unchanged so the job fails", func(t *testing.T) {
 		in := errors.New("boom")
 		if got := classifyReviewError(in); got != in {
