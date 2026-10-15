@@ -1,0 +1,85 @@
+# Self-hosted Buggies: public HTTPS ingress (Caddy) in front of `buggies serve`.
+#
+# Build the image from the kernel root (the PARENT of buggies) because buggies
+# is a nested second module whose go.mod does `replace => ..`:
+#
+#   # from documents/kernel
+#   docker compose -f buggies/deploy/docker-compose.yml up -d --build
+#
+# Prerequisites on the host:
+#   - The SEPARATE gVisor (runsc) Docker daemon on its side socket
+#     unix:///var/run/docker-gvisor.sock (see deploy/docker-gvisor.service and
+#     deploy/wsl-gvisor-setup.sh). This compose does NOT start that daemon; the
+#     app only talks to it.
+#   - Sandbox images built from the kernel repo: `make images`
+#     (buggies/sandbox-node:22, buggies/sandbox-python:3.13, buggies/sandbox-egress).
+#   - deploy/.env  (see the env_file list below) and the GitHub App PEM.
+
+services:
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    # Caddy terminates TLS (auto-HTTPS via Let's Encrypt) and is the ONLY
+    # publicly exposed service. It forwards just /webhook and /healthz to the
+    # app (see deploy/Caddyfile); the admin dashboard is never routed here.
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Domain GitHub's webhook points at; Caddy gets a cert for it. Set in .env.
+      BUGGIES_DOMAIN: ${BUGGIES_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data     # ACME account + issued certificates (persist!)
+      - caddy_config:/config
+    depends_on:
+      - buggies
+
+  buggies:
+    build:
+      # Context is the kernel root (two levels up from this file) so both the
+      # kernel module and the nested buggies module are in the build context.
+      context: ../..
+      dockerfile: buggies/Dockerfile
+    image: buggies/serve:latest
+    restart: unless-stopped
+    # All BUGGIES_* config + secrets come from deploy/.env. Required keys:
+    #   BUGGIES_WEBHOOK_SECRET, BUGGIES_GITHUB_APP_ID, BUGGIES_GITHUB_APP_KEY
+    # Common optional keys:
+    #   BUGGIES_BUDGET_CENTS, BUGGIES_GITHUB_HOST, BUGGIES_STORE_KEY,
+    #   BUGGIES_MODEL_BACKEND (+ ANTHROPIC_API_KEY), BUGGIES_SKILLS,
+    #   BUGGIES_ADMIN_TOKEN  (enables the loopback dashboard — see below)
+    env_file:
+      - .env
+    environment:
+      # The app shells out to `docker` against the gVisor daemon's side socket,
+      # NOT the host's default dockerd. The docker CLI honours DOCKER_HOST.
+      DOCKER_HOST: unix:///var/run/docker-gvisor.sock
+      # Serve plain HTTP on 8080 inside the compose network; Caddy fronts TLS.
+      BUGGIES_ADDR: ":8080"
+      BUGGIES_DATA: /var/lib/buggies
+    volumes:
+      # The gVisor Docker socket, read-only: the app issues `docker run
+      # --runtime=runsc …` to reproduce findings. Read-only is enough — the CLI
+      # only sends API requests over it; the sandbox runs in that daemon, never
+      # in this container. This container is the app, not the sandbox.
+      - /var/run/docker-gvisor.sock:/var/run/docker-gvisor.sock:ro
+      # Durable state: queue.db, budget.db, per-repo graph/findings, sandbox
+      # deps cache and workspaces. Must survive restarts (idempotency lives here).
+      - buggies_data:/var/lib/buggies
+      # GitHub App private key, read-only. BUGGIES_GITHUB_APP_KEY in .env must
+      # point at this in-container path, e.g. /etc/buggies/app.pem.
+      - ./app.pem:/etc/buggies/app.pem:ro
+    # NO `ports:` block. The webhook listener (:8080) is reached only through
+    # Caddy on the internal network, and the admin dashboard
+    # (BUGGIES_ADMIN_TOKEN → 127.0.0.1:8081 inside the container) is deliberately
+    # NOT published: it stays loopback-only so the token-gated dashboard is never
+    # exposed to the internet. To view it, bind BUGGIES_ADMIN_ADDR to 0.0.0.0:8081
+    # in .env and publish it ONLY to the host loopback — add under this service:
+    #   ports: ["127.0.0.1:8081:8081"]
+    # then SSH-tunnel the host's 127.0.0.1:8081. Never map it to a public interface.
+
+volumes:
+  buggies_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,43 @@
+# Docker build context trimming for the buggies server image.
+#
+# NOTE: the buggies image is built with the PARENT (kernel/) directory as the
+# context (see Dockerfile), and Docker only reads .dockerignore from the
+# context root. So for the real build these patterns belong at the kernel root
+# as `kernel/.dockerignore` — copy or symlink this file there. Kept here too so
+# the patterns live with the module and apply if buggies/ is ever built as its
+# own context. Paths are written relative to the buggies module.
+
+# Build output / binaries
+bin/
+dist/
+*.test
+*.out
+
+# Dev-only multi-module workspace (the image sets GOWORK=off anyway)
+go.work
+go.work.sum
+
+# Node deps are never needed in the image. web/dist (the built dashboard) is
+# served from BUGGIES_WEB_DIR at runtime, not baked in — mount it if you enable
+# the admin dashboard in the container.
+web/node_modules/
+web/dist/
+
+# Local state and secrets — never bake these into an image layer
+.env
+*.pem
+*.key
+*.db
+.buggies-store.key
+
+# VCS and editor noise
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs don't affect the build
+*.md

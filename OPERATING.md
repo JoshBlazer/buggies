@@ -173,3 +173,92 @@ requests from forks never get access to secrets. Reproductions run in the
 sandbox, not on the host. These are invariants, not options — see
 `ARCHITECTURE.md` for how the sandbox, the untrusted-input envelope, and the
 fork-safe environment enforce them.
+
+---
+
+## 9. Production deployment
+
+Sections 1–4 stand the daemon up; this section hardens it for a real,
+always-on server. The dev loop uses an `smee` tunnel for webhook delivery and
+a hand-started `dockerd` for the sandbox — production replaces both. Artifacts
+referenced here live in `deploy/`.
+
+### (a) Public HTTPS ingress via Caddy (replaces the smee tunnel)
+
+GitHub must reach `https://<host>/webhook`. In development that is an `smee`
+relay to your laptop; in production put a reverse proxy in front of the daemon
+that terminates TLS. `deploy/Caddyfile` + `deploy/docker-compose.yml` give a
+Caddy front end that:
+
+- gets and renews a certificate for `$BUGGIES_DOMAIN` automatically, and
+- forwards **only** `/webhook` and `/healthz` to `buggies` on `:8080`,
+  refusing everything else.
+
+`serve` still speaks plain HTTP on `BUGGIES_ADDR` behind the proxy and never
+terminates TLS itself. The token-gated admin dashboard (`BUGGIES_ADMIN_TOKEN`,
+bound to `BUGGIES_ADMIN_ADDR`, default `127.0.0.1:8081`) is **not** routed
+through Caddy and stays loopback-only — reach it over an SSH tunnel, never a
+public interface. Set the GitHub App's Webhook URL to
+`https://<BUGGIES_DOMAIN>/webhook`.
+
+### (b) The gVisor sandbox daemon as a supervised service
+
+The sandbox reproduces findings in a **separate** gVisor (`runsc`) Docker
+daemon on its own socket — isolated from the host's default `dockerd`. Instead
+of hand-starting it, supervise it with `deploy/docker-gvisor.service`, which
+runs:
+
+```
+dockerd --host unix:///var/run/docker-gvisor.sock \
+        --data-root /var/lib/docker-gvisor --exec-root /run/docker-gvisor \
+        --pidfile /run/docker-gvisor.pid --bridge none
+```
+
+with `Restart=on-failure` and `After=network-online.target`. Register the
+`runsc` runtime in `/etc/docker/daemon.json` first by running
+`deploy/wsl-gvisor-setup.sh` once (see `deploy/wsl-setup.md`); without it the
+executor refuses to run and reviews reproduce nothing. Point the app at this
+daemon with `DOCKER_HOST=unix:///var/run/docker-gvisor.sock`. Build the sandbox
+images once from the kernel repo with `make images`.
+
+### (c) Two ways to run the app
+
+Both assume the gVisor daemon from (b) is already up.
+
+- **systemd unit** — `deploy/buggies.service` runs the binary directly on the
+  host. Add `DOCKER_HOST=unix:///var/run/docker-gvisor.sock` to its
+  `EnvironmentFile`, build the binary with
+  `GOWORK=off GOFLAGS=-mod=mod go build -o /usr/local/bin/buggies ./cmd/buggies`,
+  and front it with any reverse proxy (Caddy/nginx). Simplest on a box where
+  Go and the `claude` CLI already live.
+- **container / compose** — `deploy/docker-compose.yml` runs `caddy` + the
+  `buggies` image built from the repo's `Dockerfile`. Because buggies is a
+  nested second module (`replace github.com/joshblazer/kernel => ..`), the
+  **build context is the kernel repo root** (the parent of `buggies/`):
+
+  ```sh
+  # from documents/kernel  (the PARENT of buggies)
+  docker compose -f buggies/deploy/docker-compose.yml up -d --build
+  ```
+
+  The app container is **not** the sandbox: it bind-mounts the gVisor socket
+  read-only and shells `docker` out to that daemon. State lives on the
+  `buggies_data` volume; config/secrets come from `deploy/.env`; the GitHub App
+  PEM is mounted read-only with `BUGGIES_GITHUB_APP_KEY` pointing at its
+  in-container path.
+
+Pick one — don't run both against the same `BUGGIES_DATA`.
+
+### (d) Readiness
+
+After starting (either option):
+
+1. `curl -fsS https://<BUGGIES_DOMAIN>/healthz` → `ok` (TLS + proxy + app).
+2. Confirm the sandbox runtime is live:
+   `DOCKER_HOST=unix:///var/run/docker-gvisor.sock docker info` lists `runsc`
+   among its runtimes. A healthy daemon here is the difference between real
+   reproductions and silent empty reviews.
+3. Open a PR on an installed repo and watch for the `buggies` check run
+   (section 5). Data under `BUGGIES_DATA` must persist across restarts — it
+   holds the idempotency queue, so a volume (not an ephemeral container layer)
+   is required.

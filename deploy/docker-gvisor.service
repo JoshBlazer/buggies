@@ -1,0 +1,48 @@
+# Systemd unit for the SEPARATE gVisor (runsc) Docker daemon that Buggies'
+# sandbox runs reproductions in. This replaces hand-starting `dockerd` by
+# supervising it as a service. Install:
+#   sudo cp deploy/docker-gvisor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now docker-gvisor
+#
+# PREREQUISITE: /etc/docker/daemon.json must register the `runsc` runtime, and
+# runsc must be on PATH. Run deploy/wsl-gvisor-setup.sh once to install gVisor
+# and register the runtime (see deploy/wsl-setup.md). The executor refuses to
+# run untrusted PR code on runc, so without runsc registered the sandbox is
+# unavailable and reviews reproduce nothing.
+#
+# This is a second dockerd, isolated from the host's default daemon: its own
+# socket, data-root, exec-root and pidfile, and --bridge none so it creates no
+# network bridge (the sandbox runs every container with --network=none). Point
+# the app at it with DOCKER_HOST=unix:///var/run/docker-gvisor.sock
+# (see deploy/buggies.service and deploy/docker-compose.yml).
+
+[Unit]
+Description=gVisor (runsc) Docker daemon for the Buggies sandbox
+After=network-online.target
+Wants=network-online.target
+# Independent of the host's default docker.service; it uses its own socket.
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd \
+  --host unix:///var/run/docker-gvisor.sock \
+  --data-root /var/lib/docker-gvisor \
+  --exec-root /run/docker-gvisor \
+  --pidfile /run/docker-gvisor.pid \
+  --bridge none
+ExecReload=/bin/kill -s HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+# dockerd needs time to come up and to drain on stop.
+TimeoutStartSec=120
+TimeoutStopSec=30
+# Let container processes outlive the unit restart boundary cleanly.
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+
+[Install]
+WantedBy=multi-user.target

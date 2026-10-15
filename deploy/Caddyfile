@@ -1,0 +1,33 @@
+# Caddy reverse proxy for Buggies — public HTTPS ingress for the GitHub webhook.
+#
+# Caddy obtains and renews a certificate for $BUGGIES_DOMAIN automatically
+# (Let's Encrypt). It is the only public listener; `buggies serve` speaks plain
+# HTTP on :8080 behind it and does NOT terminate TLS itself.
+#
+# Only two paths are exposed:
+#   POST /webhook   GitHub pull_request deliveries (HMAC-SHA256 verified by serve)
+#   GET  /healthz   liveness probe -> "ok"
+# Everything else is refused. The token-gated admin dashboard
+# (BUGGIES_ADMIN_ADDR, loopback 127.0.0.1:8081) is intentionally NOT routed here
+# and is never reachable through this proxy.
+
+{$BUGGIES_DOMAIN} {
+	encode zstd gzip
+
+	# GitHub's webhook endpoint.
+	@webhook path /webhook
+	handle @webhook {
+		reverse_proxy buggies:8080
+	}
+
+	# Liveness only.
+	@healthz path /healthz
+	handle @healthz {
+		reverse_proxy buggies:8080
+	}
+
+	# Refuse everything else (admin API/dashboard included — it is not served here).
+	handle {
+		respond 404
+	}
+}
