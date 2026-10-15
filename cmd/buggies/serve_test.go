@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/joshblazer/kernel/sandbox"
+
+	"github.com/joshblazer/buggies/internal/pipeline"
+	"github.com/joshblazer/buggies/internal/unattended"
 )
 
 // writeFiles creates each named file (empty) under dir.
@@ -64,6 +70,50 @@ func TestSelectAdapter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// classifyReviewError must turn infrastructure and can't-review conditions
+// into neutral skips (posted to the PR, job not retried) while passing real
+// faults through unchanged (job fails). A sandbox-unavailable job that used to
+// die silently now leaves a non-blocking "sandbox unavailable" note.
+func TestClassifyReviewError(t *testing.T) {
+	asSkip := func(t *testing.T, err error) *unattended.SkipReview {
+		t.Helper()
+		var skip *unattended.SkipReview
+		if !errors.As(err, &skip) {
+			t.Fatalf("expected a *SkipReview, got %T: %v", err, err)
+		}
+		return skip
+	}
+
+	t.Run("sandbox unavailable becomes a neutral skip", func(t *testing.T) {
+		// The real error wraps errSandboxUnavailable (as serveReview does).
+		in := fmt.Errorf("%w: docker info: exit status 1", errSandboxUnavailable)
+		skip := asSkip(t, classifyReviewError(in))
+		if !strings.Contains(skip.Note, "sandbox unavailable") {
+			t.Fatalf("note = %q, want it to mention sandbox unavailable", skip.Note)
+		}
+	})
+
+	t.Run("unsupported ecosystem becomes a neutral skip", func(t *testing.T) {
+		skip := asSkip(t, classifyReviewError(&pipeline.ErrUnsupportedProject{Ecosystem: "go"}))
+		if !strings.Contains(skip.Note, "go") {
+			t.Fatalf("note = %q, want it to name the ecosystem", skip.Note)
+		}
+	})
+
+	t.Run("a generic error is returned unchanged so the job fails", func(t *testing.T) {
+		in := errors.New("boom")
+		if got := classifyReviewError(in); got != in {
+			t.Fatalf("got %v, want the original error returned unchanged", got)
+		}
+	})
+
+	t.Run("nil stays nil", func(t *testing.T) {
+		if got := classifyReviewError(nil); got != nil {
+			t.Fatalf("got %v, want nil", got)
+		}
+	})
 }
 
 // Every candidate must advertise a distinct ecosystem so registering them in

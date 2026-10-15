@@ -131,17 +131,7 @@ func serveCmd(ctx context.Context, args []string) error {
 			callsBefore, costBefore := claudecli.Usage()
 			fs, err := serveReview(ctx, name, treeRoot, dd, job.BaseSHA, job.HeadSHA, env)
 			if err != nil {
-				// An unsupported ecosystem is not a failure to retry: skip the PR
-				// with a neutral note rather than silently marking the job failed.
-				var unsupported *pipeline.ErrUnsupportedProject
-				if errors.As(err, &unsupported) {
-					note := "no supported ecosystem (Node or Python) detected"
-					if unsupported.Ecosystem != "" {
-						note = "unsupported ecosystem (" + string(unsupported.Ecosystem) + " only)"
-					}
-					return nil, &unattended.SkipReview{Note: note}
-				}
-				return nil, err
+				return nil, classifyReviewError(err)
 			}
 			if _, costAfter := claudecli.Usage(); costAfter > costBefore {
 				cents := int(math.Round((costAfter - costBefore) * 100))
@@ -262,6 +252,36 @@ func spaHandler(dir string) http.Handler {
 	})
 }
 
+// errSandboxUnavailable marks a failure to reach the isolation runtime (the
+// sandbox's Docker/gVisor daemon). It is infrastructure, not a problem with the
+// PR, so classifyReviewError turns it into a neutral skip note on the check run
+// rather than a silent failed job.
+var errSandboxUnavailable = errors.New("sandbox unavailable")
+
+// classifyReviewError decides how the worker should treat a serveReview error.
+// A sandbox-unavailable or unsupported-ecosystem error is not a transient fault
+// to retry and not the PR's fault to fail on: it becomes a neutral *SkipReview,
+// which the worker posts to the PR as a non-blocking check-run note so the
+// review is never silent. Any other error is returned unchanged, so the job
+// fails and surfaces in the dashboard.
+func classifyReviewError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errSandboxUnavailable) {
+		return &unattended.SkipReview{Note: "sandbox unavailable — Buggies could not reach its isolation runtime, so the review did not run; re-run it once the sandbox is restored"}
+	}
+	var unsupported *pipeline.ErrUnsupportedProject
+	if errors.As(err, &unsupported) {
+		note := "no supported ecosystem (Node or Python) detected"
+		if unsupported.Ecosystem != "" {
+			note = "unsupported ecosystem (" + string(unsupported.Ecosystem) + " only)"
+		}
+		return &unattended.SkipReview{Note: note}
+	}
+	return err
+}
+
 // serveReview builds the full pipeline over a materialized checkout and reviews
 // base..head. env is the (possibly secret-scrubbed) environment for the model
 // subprocess.
@@ -295,7 +315,11 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 		ex.Runtime, ex.AllowRunc = "runc", true
 	}
 	if err := ex.CheckRuntime(ctx); err != nil {
-		return nil, err
+		// The isolation runtime (the sandbox's Docker/gVisor daemon) is
+		// unreachable. That is infrastructure, not a problem with this PR, so
+		// mark it so the Review closure can turn it into a neutral "sandbox
+		// unavailable" note on the check run instead of a silent failed job.
+		return nil, fmt.Errorf("%w: %v", errSandboxUnavailable, err)
 	}
 
 	// Pick the ecosystem by detecting the checked-out tree: the first candidate
