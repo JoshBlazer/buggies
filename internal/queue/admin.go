@@ -107,6 +107,18 @@ func (q *Queue) GetByID(ctx context.Context, id int64) (Record, error) {
 	return r, err
 }
 
+// PurgeRepo deletes every job for a repo and returns how many rows were
+// removed. It is used when a tenant removes Buggies from a repository: their
+// queued and historical jobs are erased along with the rest of their data.
+func (q *Queue) PurgeRepo(ctx context.Context, repo string) (int64, error) {
+	res, err := q.db.ExecContext(ctx, `DELETE FROM jobs WHERE repo = ?`, repo)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // Requeue flips a reviewed job's state back to 'queued' so the next drain
 // re-reviews that PR head. ErrNotFound when the id is unknown; ErrJobRunning
 // when the job is currently running (requeuing it would double-review). A job
@@ -126,8 +138,11 @@ func (q *Queue) Requeue(ctx context.Context, id int64) error {
 	if State(state) == Queued {
 		return nil
 	}
-	_, err = q.db.ExecContext(ctx, "UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?",
-		string(Queued), time.Now().UTC().Format(time.RFC3339Nano), id)
+	// Reset the backoff and clear the stale error so a manual requeue is claimed
+	// on the next drain, not held back by a dead-lettered job's old schedule.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = q.db.ExecContext(ctx, "UPDATE jobs SET state = ?, next_attempt_at = ?, last_error = '', updated_at = ? WHERE id = ?",
+		string(Queued), now, now, id)
 	return err
 }
 
