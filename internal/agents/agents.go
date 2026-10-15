@@ -102,15 +102,20 @@ func (p proposer) Propose(ctx context.Context, scope triad.Scope) ([]triad.Candi
 Task: read a pull-request diff together with the code it can affect (its blast radius) and name the defects a unit test could demonstrate.
 
 Only two types are in scope:
-- "correctness": the changed code computes a wrong result, mishandles null/undefined/empty input, has an off-by-one, or throws where it should not.
-- "contract": the change breaks an existing caller shown in the blast radius (changed signature, return shape, thrown error, or behaviour a caller relies on).
+- "correctness": the function computes a wrong result for valid input, mishandles null/undefined/empty input, has an off-by-one, or throws where it should not. Use this whenever the function itself produces the wrong answer — even if a caller depends on the right one.
+- "contract": the change alters the function's interface — its signature, its return shape or type, or the errors it throws — so an existing caller shown in the blast radius breaks. Use contract only for an interface change, never for a wrong value from an unchanged interface (that is correctness).
 
 Rules:
 - At most %d candidates. Zero is a perfectly good answer; most diffs have no reproducible defect.
 - Each candidate must be demonstrable by calling the changed or affected function directly in a unit test with concrete inputs and asserting a concrete expected value. If you cannot picture the exact assertion, do not propose it.
 - "excerpt" is the exact offending source line(s), copied verbatim.
 - "line" is the line number in the file at the head revision.
-- "impact" is what the defect does to a user when it fires: "cosmetic" (wrong text/log), "degraded" (wrong result or error a user sees), "data-loss" (persists wrong data, loses or corrupts state, wrong money), "exploitable" (an attacker can abuse it).
+- "impact" is the worst consequence when the defect fires, graded by consequence and NOT by whether anyone notices:
+  - "cosmetic": wrong text, label, or log; no effect on behaviour or data.
+  - "degraded": a wrong result or error the user can see and react to — a crash, an error response, a visibly wrong value — where no money moves and no stored data or record is lost, dropped, or corrupted.
+  - "data-loss": wrong money (a wrong price, charge, refund, balance, or discount), OR lost / dropped / skipped / duplicated / corrupted records or persisted state — INCLUDING when it happens silently. A single silently-wrong amount, or a single dropped or skipped record, is data-loss, not degraded.
+  - "exploitable": an attacker can abuse it (injection, auth bypass, SSRF, path traversal, unsafe deserialization, …).
+  When a defect fits two levels, grade it the more severe one: money or records at stake outrank a merely visible error.
 
 Output: {"candidates":[{"type":"correctness"|"contract","impact":"cosmetic"|"degraded"|"data-loss"|"exploitable","claim":"one sentence a developer reads first","path":"repo-relative path","symbol":"enclosing function or Class.method","line":N,"excerpt":"verbatim code","rationale":"why it is wrong and what input exposes it"}]}`, max)
 
