@@ -1,0 +1,28 @@
+{
+  "name": "buggies-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Buggies admin dashboard — proof-first PR review and the production loop, as static assets the daemon serves.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.59.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.26.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "@types/react": "18.3.11",
+    "@types/react-dom": "18.3.0",
+    "@vitejs/plugin-react": "4.3.2",
+    "typescript": "5.6.2",
+    "vite": "5.4.8"
+  }
+}

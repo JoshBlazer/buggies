@@ -17,10 +17,12 @@ import (
 	"github.com/joshblazer/kernel/sandbox"
 	"github.com/joshblazer/kernel/sandbox/adapter"
 	"github.com/joshblazer/kernel/sandbox/adapter/node"
+	"github.com/joshblazer/kernel/sandbox/adapter/python"
 	"github.com/joshblazer/kernel/sandbox/runtime"
 
 	"github.com/joshblazer/buggies/internal/agents"
 	"github.com/joshblazer/buggies/internal/agents/skills"
+	"github.com/joshblazer/buggies/internal/api"
 	"github.com/joshblazer/buggies/internal/budget"
 	"github.com/joshblazer/buggies/internal/checkout"
 	"github.com/joshblazer/buggies/internal/claudecli"
@@ -133,7 +135,11 @@ func serveCmd(ctx context.Context, args []string) error {
 				// with a neutral note rather than silently marking the job failed.
 				var unsupported *pipeline.ErrUnsupportedProject
 				if errors.As(err, &unsupported) {
-					return nil, &unattended.SkipReview{Note: "unsupported ecosystem (" + string(unsupported.Ecosystem) + " only)"}
+					note := "no supported ecosystem (Node or Python) detected"
+					if unsupported.Ecosystem != "" {
+						note = "unsupported ecosystem (" + string(unsupported.Ecosystem) + " only)"
+					}
+					return nil, &unattended.SkipReview{Note: note}
 				}
 				return nil, err
 			}
@@ -181,6 +187,48 @@ func serveCmd(ctx context.Context, args []string) error {
 	server := unattended.NewServer([]byte(secret), r)
 	go server.Run(ctx, *interval)
 
+	// Admin dashboard (JSON API + static SPA) on a SEPARATE loopback listener,
+	// never the public webhook address. Fail closed: no BUGGIES_ADMIN_TOKEN,
+	// no admin surface at all.
+	if adminTok := os.Getenv("BUGGIES_ADMIN_TOKEN"); adminTok != "" {
+		adminAddr := envOr("BUGGIES_ADMIN_ADDR", "127.0.0.1:8081")
+		webDir := envOr("BUGGIES_WEB_DIR", "web/dist")
+		apiHandler := api.New(api.Deps{
+			Jobs:     q,
+			Ledger:   ledger,
+			Catalog:  api.DirCatalog{Root: root},
+			Settings: &api.FileSettings{Path: filepath.Join(root, "admin-settings.json"), Defaults: api.AdminSettings{BudgetCents: budgetCents}},
+			Config: api.Config{
+				Addr:             *addr,
+				GitHubHost:       host,
+				GitHubAppID:      appID,
+				AllowRunc:        os.Getenv("BUGGIES_ALLOW_RUNC") != "",
+				DataRoot:         root,
+				HasWebhookSecret: secret != "",
+				HasAppKey:        len(keyPEM) > 0,
+				HasStoreKey:      os.Getenv("BUGGIES_STORE_KEY") != "",
+			},
+		}, adminTok)
+		mux := http.NewServeMux()
+		mux.Handle("/api/", apiHandler)
+		mux.Handle("/", spaHandler(webDir))
+		adminSrv := &http.Server{Addr: adminAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			sh, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = adminSrv.Shutdown(sh)
+		}()
+		go func() {
+			logf("admin dashboard on http://%s (serving %q)", adminAddr, webDir)
+			if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logf("admin server: %v", err)
+			}
+		}()
+	} else {
+		logf("admin dashboard disabled (set BUGGIES_ADMIN_TOKEN to enable)")
+	}
+
 	srv := &http.Server{Addr: *addr, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	go func() {
@@ -195,6 +243,23 @@ func serveCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// spaHandler serves the built dashboard from dir, falling back to index.html
+// for any path that is not an existing file (client-side routing). The
+// filepath.Clean on a rooted path keeps requests from escaping dir.
+func spaHandler(dir string) http.Handler {
+	files := http.FileServer(http.Dir(dir))
+	index := filepath.Join(dir, "index.html")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			if st, err := os.Stat(filepath.Join(dir, filepath.Clean("/"+r.URL.Path))); err == nil && !st.IsDir() {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.ServeFile(w, r, index)
+	})
 }
 
 // serveReview builds the full pipeline over a materialized checkout and reviews
@@ -212,8 +277,15 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 	}
 	defer st.Close()
 
+	// Register an adapter for every supported ecosystem: runtime.Docker.validate
+	// rejects a Request whose Ecosystem has no registered adapter, so whichever
+	// one serveReview selects below must be present here.
+	adapters := map[sandbox.Ecosystem]adapter.Adapter{}
+	for _, a := range candidateAdapters() {
+		adapters[a.Ecosystem()] = a
+	}
 	ex := &runtime.Docker{
-		Adapters:   map[sandbox.Ecosystem]adapter.Adapter{sandbox.Node: node.Adapter{}},
+		Adapters:   adapters,
 		DepsCache:  filepath.Join(dd, "deps"),
 		Workspaces: filepath.Join(dd, "ws"),
 		Egress:     &runtime.Egress{},
@@ -226,6 +298,18 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 		return nil, err
 	}
 
+	// Pick the ecosystem by detecting the checked-out tree: the first candidate
+	// whose Detect matches wins (Node before Python for polyglot repos). When
+	// none match, this is not a retryable failure — return ErrUnsupportedProject
+	// with an empty Ecosystem so the Review closure neutral-skips the PR.
+	selected, err := selectAdapter(ctx, candidateAdapters(), root, head)
+	if err != nil {
+		return nil, err
+	}
+	if selected == nil {
+		return nil, &pipeline.ErrUnsupportedProject{Root: root}
+	}
+
 	ag := &agents.Agents{Router: policy.NewRouterEnv(filepath.Join(dd, "model-cache"), env), Tiers: policy.TriadTiers, MaxCandidates: policy.MaxCandidates}
 	if os.Getenv("BUGGIES_SKILLS") != "off" {
 		sk, err := skills.Load()
@@ -235,7 +319,7 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 		ag.Skills = sk
 	}
 	p := &pipeline.Pipeline{
-		Repo: name, Root: root, Graph: g, Executor: ex, Adapter: node.Adapter{},
+		Repo: name, Root: root, Graph: g, Executor: ex, Adapter: selected,
 		Agents: ag, Store: st,
 		Throttled: func(ctx context.Context, typ finding.Type) (bool, error) {
 			d, n, err := st.DismissalRate(ctx, name, typ)
@@ -248,6 +332,31 @@ func serveReview(ctx context.Context, name, root, dd, base, head string, env []s
 		return nil, err
 	}
 	return res.Findings, nil
+}
+
+// candidateAdapters is the ordered set of ecosystem adapters serve considers,
+// first match wins. Node precedes Python so a polyglot repo (both package.json
+// and a Python marker) is reviewed as Node; ordering is the only knob here.
+func candidateAdapters() []adapter.Adapter {
+	return []adapter.Adapter{node.Adapter{}, python.Adapter{}}
+}
+
+// selectAdapter returns the first candidate whose Detect matches the tree at
+// root@rev, or nil when none match (the caller then neutral-skips the PR). A
+// Detect error is returned as-is: it means detection itself failed, which is
+// not the same as "no ecosystem matched".
+func selectAdapter(ctx context.Context, candidates []adapter.Adapter, root, rev string) (adapter.Adapter, error) {
+	snap := sandbox.Snapshot{Root: root, Revision: rev}
+	for _, a := range candidates {
+		det, err := a.Detect(ctx, snap)
+		if err != nil {
+			return nil, err
+		}
+		if det.Matched {
+			return a, nil
+		}
+	}
+	return nil, nil
 }
 
 func short(sha string) string {
