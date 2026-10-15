@@ -38,7 +38,11 @@ type Reviewer struct {
 	Budget func(ctx context.Context, job github.PRJob) (allow bool, note string, err error)
 	// PostSkip posts the skip note to the PR. Required if Budget can deny.
 	PostSkip func(ctx context.Context, job github.PRJob, note string) error
-	Logf     func(format string, args ...any)
+	// Uninstall, if set, purges a tenant's data when they remove Buggies from a
+	// repository (an `installation`/`installation_repositories` removal). It is
+	// the data-deletion-on-uninstall control; wired to the webhook by NewServer.
+	Uninstall func(ctx context.Context, repos []string) error
+	Logf      func(format string, args ...any)
 }
 
 func (r *Reviewer) logf(format string, args ...any) {

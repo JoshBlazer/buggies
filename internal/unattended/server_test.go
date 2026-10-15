@@ -2,6 +2,8 @@ package unattended
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -113,5 +115,67 @@ func TestHealthz(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("healthz = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestReadyz proves readiness is 200 when the Ready check passes (or is unset)
+// and 503 — naming the cause — when it fails, so an orchestrator holds traffic
+// off an instance whose sandbox is down.
+func TestReadyz(t *testing.T) {
+	// Unset Ready: readiness equals liveness.
+	s := NewServer([]byte(secret), &Reviewer{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("readyz (no check) = %d, want 200", resp.StatusCode)
+	}
+
+	// Failing Ready: 503 with the reason in the body.
+	s.Ready = func(context.Context) error { return errors.New("sandbox daemon unreachable") }
+	resp, err = http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readyz (failing) = %d, want 503", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "sandbox daemon unreachable") {
+		t.Fatalf("readyz body = %q, want the cause", body)
+	}
+}
+
+// TestMetrics proves the Prometheus endpoint reports queue depth by state.
+func TestMetrics(t *testing.T) {
+	q, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if _, err := q.Enqueue(context.Background(), "o/r@h", "d", "o/r", "h", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(NewServer([]byte(secret), &Reviewer{Q: q}).Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{"buggies_up 1", `buggies_queue_jobs{state="queued"} 1`, "buggies_goroutines"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("metrics body missing %q; got:\n%s", want, body)
+		}
 	}
 }
