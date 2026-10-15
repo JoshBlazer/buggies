@@ -1,0 +1,17 @@
+{
+  "name": "gold-tier-discount",
+  "repo": "acme/shop",
+  "description": "The head commit capitalizes the gold-tier string ('gold' -> 'Gold') in applyDiscount, so gold-tier customers silently stop receiving their 20% discount. cart.total passes lowercase tiers, so the comparison never matches. A correct review reproduces the lost discount.",
+  "ecosystem": "node",
+  "expect": [
+    {
+      "type": "correctness",
+      "path": "src/discount.js",
+      "symbol": "applyDiscount",
+      "minImpact": "data-loss",
+      "blocking": true,
+      "lineRange": [1, 5],
+      "claimRegex": "(?i)gold"
+    }
+  ]
+}

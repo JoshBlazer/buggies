@@ -1,0 +1,16 @@
+{
+  "name": "page-drops-last",
+  "repo": "acme/feed",
+  "description": "The head commit changes the pagination slice end from start+size to start+size-1, so every page silently drops its last item — records vanish from the feed. A correct review reproduces the dropped record.",
+  "ecosystem": "node",
+  "expect": [
+    {
+      "type": "correctness",
+      "path": "src/paginate.js",
+      "symbol": "page",
+      "minImpact": "data-loss",
+      "blocking": true,
+      "claimRegex": "(?i)(page|slice|last|drop|item|record)"
+    }
+  ]
+}

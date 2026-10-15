@@ -1,0 +1,7 @@
+{
+  "name": "clean-refactor",
+  "repo": "acme/mathlib",
+  "description": "Negative fixture: the head commit rewrites sum() from an explicit for-loop to Array.prototype.reduce with no change in behaviour. A correct review reproduces NOTHING. Any finding here is noise and counts against precision.",
+  "ecosystem": "node",
+  "expect": []
+}
