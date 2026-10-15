@@ -1,11 +1,84 @@
 name: ci
-on: [push, pull_request]
+
+# Unit/build gate on every push and PR; the precision/recall eval runs nightly
+# and on demand (it needs model access + a sandbox, so it is not a PR gate).
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 7 * * *" # nightly eval
+  workflow_dispatch:
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Buggies depends on the kernel module via `replace => ..`, so the kernel
+      # repo must sit one directory ABOVE the buggies checkout — exactly the
+      # local dev layout (kernel/ with buggies/ inside it). Reproduce it in CI.
+      - name: Check out kernel (the engine)
+        uses: actions/checkout@v4
+        with:
+          repository: joshblazer/kernel
+          path: kernel
+          token: ${{ secrets.KERNEL_REPO_TOKEN }} # PAT/deploy token with read on the private kernel repo
+      - name: Check out buggies inside the kernel tree
+        uses: actions/checkout@v4
+        with:
+          path: kernel/buggies
       - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod }
-      - run: go vet ./...
-      - run: go test -race ./...
+        with:
+          go-version-file: kernel/buggies/go.mod
+          cache-dependency-path: kernel/buggies/go.sum
+      - name: Vet
+        working-directory: kernel/buggies
+        run: GOWORK=off GOFLAGS=-mod=mod go vet ./...
+      - name: Test (race)
+        working-directory: kernel/buggies
+        run: GOWORK=off GOFLAGS=-mod=mod go test -race ./...
+      - name: Build
+        working-directory: kernel/buggies
+        run: GOWORK=off GOFLAGS=-mod=mod go build -o /dev/null ./cmd/buggies ./cmd/buggies-eval
+
+  eval:
+    # Precision/recall over the seeded-bug fixtures. Needs a container sandbox
+    # and model access, so it runs only nightly / on demand, not as a PR gate.
+    # Hosted runners have no gVisor, so it uses runc (BUGGIES_ALLOW_RUNC=1) —
+    # acceptable because the fixtures are first-party, not untrusted code.
+    # Requires the ANTHROPIC_API_KEY secret. Reported, not blocking, until the
+    # fixture corpus + severity grader are calibrated (see page-drops-last).
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out kernel
+        uses: actions/checkout@v4
+        with:
+          repository: joshblazer/kernel
+          path: kernel
+          token: ${{ secrets.KERNEL_REPO_TOKEN }}
+      - name: Check out buggies inside the kernel tree
+        uses: actions/checkout@v4
+        with:
+          path: kernel/buggies
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: kernel/buggies/go.mod
+          cache-dependency-path: kernel/buggies/go.sum
+      - name: Build sandbox images
+        working-directory: kernel
+        run: make image-node image-egress
+      - name: Run eval
+        working-directory: kernel/buggies
+        continue-on-error: true # informational until the corpus/grader converge
+        env:
+          BUGGIES_ALLOW_RUNC: "1"
+          BUGGIES_MODEL_BACKEND: anthropic
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          GOWORK=off GOFLAGS=-mod=mod go run ./cmd/buggies-eval \
+            --fixtures testdata/fixtures --json | tee eval-report.json
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: kernel/buggies/eval-report.json
