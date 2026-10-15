@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
@@ -77,5 +78,59 @@ func TestPostReviewSendsComments(t *testing.T) {
 	}
 	if c0 := got.Comments[0]; c0.Path != "a.js" || c0.Line != 10 || c0.Side != "RIGHT" || c0.Body != "boom" {
 		t.Fatalf("comment wire shape wrong: %+v", c0)
+	}
+}
+
+// TestDoRetriesOnRateLimit proves the client rides out a transient throttle: a
+// 429 (then 403 secondary-limit) is retried with backoff rather than failing
+// the job, and a following 200 succeeds.
+func TestDoRetriesOnRateLimit(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		switch n {
+		case 1:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+		case 2:
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`))
+		default:
+			w.Write([]byte(`{"head":{"sha":"abc"},"base":{"sha":"def"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	head, base, err := c.Head(context.Background(), PR{Owner: "o", Repo: "r", Number: 1})
+	if err != nil {
+		t.Fatalf("Head after retries: %v", err)
+	}
+	if head != "abc" || base != "def" {
+		t.Fatalf("head/base = %q/%q, want abc/def", head, base)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("calls = %d, want 3 (two throttles, then success)", got)
+	}
+}
+
+// TestDoDoesNotRetryClientError proves a plain 4xx (not a throttle) fails fast,
+// without wasting attempts.
+func TestDoDoesNotRetryClientError(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, _, err := c.Head(context.Background(), PR{Owner: "o", Repo: "r", Number: 1}); err == nil {
+		t.Fatal("expected a 404 error")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("calls = %d, want 1 (no retry on 404)", got)
 	}
 }

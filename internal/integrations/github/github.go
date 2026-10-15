@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
@@ -97,43 +98,99 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if base == "" {
 		base = "https://api.github.com"
 	}
-	var rb io.Reader
+	var body []byte
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		rb = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, rb)
-	if err != nil {
-		return err
-	}
-	// With a PAT the token is set here; a GitHub App client leaves Token empty
-	// and lets its installation-token transport inject Authorization instead.
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
+		body = b
 	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return err
+
+	// GitHub throttles with 429 (primary rate limit), 403 (secondary rate
+	// limit), and the occasional 5xx. A single Do would turn any of those into a
+	// permanently-failed job; retry a few times with backoff (honouring
+	// Retry-After) so a transient throttle does not lose a review. The body is
+	// kept as bytes so each attempt can send a fresh reader.
+	const maxAttempts = 4
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var rb io.Reader
+		if body != nil {
+			rb = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, base+path, rb)
+		if err != nil {
+			return err
+		}
+		// With a PAT the token is set here; a GitHub App client leaves Token
+		// empty and lets its installation-token transport inject Authorization.
+		if c.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := hc.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt == maxAttempts || !backoffSleep(ctx, attempt, 0) {
+				return err
+			}
+			continue
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode/100 == 2 {
+			if out != nil && len(raw) > 0 {
+				return json.Unmarshal(raw, out)
+			}
+			return nil
+		}
+		lastErr = fmt.Errorf("github %s %s: %s: %s", method, path, resp.Status, bytes.TrimSpace(raw))
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode/100 == 5 ||
+			(resp.StatusCode == http.StatusForbidden && bytes.Contains(bytes.ToLower(raw), []byte("rate limit")))
+		if !retryable || attempt == maxAttempts || !backoffSleep(ctx, attempt, retryAfter(resp.Header)) {
+			return lastErr
+		}
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("github %s %s: %s: %s", method, path, resp.Status, bytes.TrimSpace(raw))
+	return lastErr
+}
+
+// retryAfter reads a Retry-After header expressed in seconds, if present.
+func retryAfter(h http.Header) time.Duration {
+	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			return time.Duration(secs) * time.Second
+		}
 	}
-	if out != nil && len(raw) > 0 {
-		return json.Unmarshal(raw, out)
+	return 0
+}
+
+// backoffSleep waits before the next attempt — the server's Retry-After when it
+// gave one, otherwise exponential (0.5s, 1s, 2s…) capped at 8s. It returns
+// false if the context is cancelled while waiting, so a shutdown is not stalled.
+func backoffSleep(ctx context.Context, attempt int, retry time.Duration) bool {
+	d := retry
+	if d <= 0 {
+		d = time.Duration(250*(1<<attempt)) * time.Millisecond
+		if d > 8*time.Second {
+			d = 8 * time.Second
+		}
 	}
-	return nil
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }

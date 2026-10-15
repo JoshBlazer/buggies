@@ -148,3 +148,56 @@ func TestVerifySignatureRejectsEmptySecretAndJunk(t *testing.T) {
 		t.Error("malformed header must not verify")
 	}
 }
+
+// TestParseUninstall covers the two removal signals that trigger a data purge,
+// and confirms unrelated events/actions are ignored.
+func TestParseUninstall(t *testing.T) {
+	cases := []struct {
+		name  string
+		event string
+		body  string
+		want  []string
+		ok    bool
+	}{
+		{
+			name:  "app uninstalled purges all its repos",
+			event: "installation",
+			body:  `{"action":"deleted","repositories":[{"full_name":"acme/web"},{"full_name":"acme/api"}]}`,
+			want:  []string{"acme/web", "acme/api"},
+			ok:    true,
+		},
+		{
+			name:  "repos removed from installation",
+			event: "installation_repositories",
+			body:  `{"action":"removed","repositories_removed":[{"full_name":"acme/old"}]}`,
+			want:  []string{"acme/old"},
+			ok:    true,
+		},
+		{
+			name:  "installation created is not a removal",
+			event: "installation",
+			body:  `{"action":"created","repositories":[{"full_name":"acme/web"}]}`,
+			ok:    false,
+		},
+		{
+			name:  "repos added is not a removal",
+			event: "installation_repositories",
+			body:  `{"action":"added","repositories_added":[{"full_name":"acme/new"}]}`,
+			ok:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repos, ok, err := ParseUninstall(tc.event, []byte(tc.body))
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if tc.ok && strings.Join(repos, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("repos = %v, want %v", repos, tc.want)
+			}
+		})
+	}
+}

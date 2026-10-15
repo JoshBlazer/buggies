@@ -31,10 +31,10 @@ type PRJob struct {
 // reviewableActions are the pull_request actions that warrant a (re-)review.
 // Everything else (labeled, assigned, closed, ...) is ignored.
 var reviewableActions = map[string]bool{
-	"opened":              true,
-	"reopened":            true,
-	"synchronize":         true, // a new push to the PR head
-	"ready_for_review":    true,
+	"opened":           true,
+	"reopened":         true,
+	"synchronize":      true, // a new push to the PR head
+	"ready_for_review": true,
 }
 
 // VerifySignature reports whether sigHeader (the X-Hub-Signature-256 value,
@@ -120,13 +120,53 @@ func ParsePullRequest(body []byte) (job PRJob, ok bool, err error) {
 	}, true, nil
 }
 
-// WebhookHandler verifies and dispatches GitHub pull_request webhooks. Secret
-// is the App's webhook secret. OnPR receives every reviewable PR; returning an
-// error from it yields 500 so GitHub redelivers. Non-pull_request events and
-// non-reviewable actions are acknowledged with 200 and dropped.
+// ParseUninstall extracts the repositories a tenant has removed from Buggies,
+// from an `installation` (action "deleted" — the whole app uninstalled) or an
+// `installation_repositories` (action "removed" — specific repos dropped)
+// event. ok is false for any other event or action. These are the signals that
+// a tenant's data should be purged: GitHub no longer authorizes Buggies for
+// that code, so neither should Buggies keep its findings.
+func ParseUninstall(eventType string, body []byte) (repos []string, ok bool, err error) {
+	var e struct {
+		Action       string `json:"action"`
+		Repositories []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
+		RepositoriesRemoved []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories_removed"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		return nil, false, fmt.Errorf("github: malformed %s payload: %w", eventType, err)
+	}
+	var src []struct {
+		FullName string `json:"full_name"`
+	}
+	switch {
+	case eventType == "installation" && e.Action == "deleted":
+		src = e.Repositories
+	case eventType == "installation_repositories" && e.Action == "removed":
+		src = e.RepositoriesRemoved
+	default:
+		return nil, false, nil
+	}
+	for _, r := range src {
+		if r.FullName != "" {
+			repos = append(repos, r.FullName)
+		}
+	}
+	return repos, true, nil
+}
+
+// WebhookHandler verifies and dispatches GitHub webhooks. Secret is the App's
+// webhook secret. OnPR receives every reviewable PR; OnUninstall (optional)
+// receives the repositories a tenant removed, so their data can be purged.
+// Returning an error from a handler yields 500 so GitHub redelivers. Other
+// events and non-reviewable actions are acknowledged with 200 and dropped.
 type WebhookHandler struct {
-	Secret []byte
-	OnPR   func(ctx context.Context, job PRJob) error
+	Secret      []byte
+	OnPR        func(ctx context.Context, job PRJob) error
+	OnUninstall func(ctx context.Context, repos []string) error
 }
 
 func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,25 +183,40 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
-	if ev := r.Header.Get("X-GitHub-Event"); ev != "pull_request" {
-		w.WriteHeader(http.StatusOK) // ack-and-ignore non-PR events
-		return
-	}
-	job, ok, err := ParsePullRequest(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !ok {
-		w.WriteHeader(http.StatusOK) // reviewable? no — ack and drop
-		return
-	}
-	job.DeliveryID = r.Header.Get("X-GitHub-Delivery")
-	if h.OnPR != nil {
-		if err := h.OnPR(r.Context(), job); err != nil {
-			http.Error(w, "handler error", http.StatusInternalServerError)
+	ev := r.Header.Get("X-GitHub-Event")
+	switch ev {
+	case "pull_request":
+		job, ok, err := ParsePullRequest(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if !ok {
+			w.WriteHeader(http.StatusOK) // reviewable? no — ack and drop
+			return
+		}
+		job.DeliveryID = r.Header.Get("X-GitHub-Delivery")
+		if h.OnPR != nil {
+			if err := h.OnPR(r.Context(), job); err != nil {
+				http.Error(w, "handler error", http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	case "installation", "installation_repositories":
+		repos, ok, err := ParseUninstall(ev, body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if ok && len(repos) > 0 && h.OnUninstall != nil {
+			if err := h.OnUninstall(r.Context(), repos); err != nil {
+				http.Error(w, "handler error", http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		w.WriteHeader(http.StatusOK) // ack-and-ignore other events
 	}
-	w.WriteHeader(http.StatusOK)
 }
