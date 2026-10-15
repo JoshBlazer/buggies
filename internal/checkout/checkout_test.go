@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,52 @@ func TestMaterializeChecksOutHeadWithBasePresent(t *testing.T) {
 	}
 	if !hasCommit(context.Background(), dir, baseSHA) {
 		t.Error("base commit missing; diff base..head would fail")
+	}
+}
+
+// TestMaterializeTreeIsSandboxReadable proves the materialized tree is readable
+// by a non-owner, unprivileged uid — the sandbox runs as uid 65534 and copies
+// the bind-mounted tree in, so a tree left at 0700 makes that copy fail with
+// "Permission denied" and no finding can ever be reproduced (the serve-path
+// false-negative). Every directory must carry o+rx and every file o+r.
+func TestMaterializeTreeIsSandboxReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file permissions")
+	}
+	repo, baseSHA, headSHA := gitInit(t)
+	// Create the destination at the restrictive mode the daemon uses, to prove
+	// Materialize relaxes it rather than inheriting it.
+	dir := filepath.Join(t.TempDir(), "checkout", headSHA)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Materialize(context.Background(), Spec{
+		RepoURL: repo, Ref: "pr", HeadSHA: headSHA, BaseSHA: baseSHA, Dir: dir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		perm := info.Mode().Perm()
+		if perm&0o004 == 0 {
+			t.Errorf("%s is not other-readable: %o", path, perm)
+		}
+		if d.IsDir() && perm&0o001 == 0 {
+			t.Errorf("dir %s is not other-traversable: %o", path, perm)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +80,47 @@ func Materialize(ctx context.Context, spec Spec) (string, error) {
 				short(got), short(spec.HeadSHA), spec.Ref)
 		}
 	}
+	// The sandbox bind-mounts this tree read-only and reads it as an
+	// unprivileged, non-owner uid (65534). The tree is created 0700 and git
+	// writes contents at the daemon's umask, so that uid may be unable to read
+	// it — the copy-in step then fails with "Permission denied" and nothing can
+	// be reproduced. Make the tree world-readable (dirs +rx, files +r) so the
+	// sandbox user can read it. This is safe: the tree holds only the PR's own
+	// (untrusted, already public) source, and its parent dir stays 0700, so no
+	// other local user gains reach and no secret (store key, graph.db, tokens,
+	// which live outside this tree) is touched.
+	if err := makeSandboxReadable(spec.Dir); err != nil {
+		return "", fmt.Errorf("checkout: make tree readable: %w", err)
+	}
 	return spec.Dir, nil
+}
+
+// makeSandboxReadable grants other-read on every regular file and other-read+
+// execute on every directory under dir, so the sandbox's unprivileged uid can
+// read the mounted tree. Symlinks are skipped: chmod follows them, and a
+// malicious PR could point one at a host path outside the tree.
+func makeSandboxReadable(dir string) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		want := mode | 0o044 // o+r, g+r
+		if d.IsDir() {
+			want |= 0o055 // o+rx, g+rx so the dir is traversable
+		}
+		if want == mode {
+			return nil
+		}
+		return os.Chmod(path, want)
+	})
 }
 
 // hasCommit reports whether sha names a commit object already in Dir.
