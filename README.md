@@ -2,11 +2,21 @@
 
 **Catches the bug before it ships — and proves it did after.**
 
-Buggies reviews a diff, hunts for real defects in the code the change can reach,
-and only reports a finding once it has *reproduced* the bug in a sandbox. No
-reproduction, no report. It is a thin, opinionated shell over the shared
-[`kernel`](../README.md) engine, tuned to be **quiet**: high precision, low noise,
-predictable per-seat cost.
+Buggies reviews every pull request unattended, hunts for real defects in the code
+a change can reach, and **only comments once it has reproduced the bug in a
+sandbox — attaching the failing test that proves it**. No reproduction, no
+comment. The first thing a developer sees is a red test on the exact line, not an
+opinion they have to adjudicate.
+
+It runs the whole review itself as a GitHub App — checkout, isolation, model
+calls, proof, posting — so there is nothing to wire into CI. Untrusted fork code
+runs under gVisor with repository secrets stripped from the model; **Node and
+Python** are supported today; the model cascade runs **on-device by default** (the
+`claude` CLI, no `ANTHROPIC_API_KEY`, no API billing). A built-in admin dashboard
+shows every job, finding, and dollar spent.
+
+It is a thin, opinionated shell over the shared [`kernel`](../README.md) engine,
+tuned to be **quiet**: high precision, low noise, predictable per-seat cost.
 
 Start with [VISION.md](VISION.md), then [ARCHITECTURE.md](ARCHITECTURE.md),
 [STACK.md](STACK.md), [USAGE.md](USAGE.md), [OPERATING.md](OPERATING.md),
@@ -43,7 +53,15 @@ Claude (the `claude` CLI) — no `ANTHROPIC_API_KEY` and no API billing; set
 `repo@head_sha`), a worker mints an installation token, checks out the exact
 head, reviews it, and posts a check run plus a review comment. Pull requests
 from forks are treated as untrusted — their code runs with secret-bearing env
-stripped, and the model never sees repository secrets.
+stripped, and the model never sees repository secrets. When the sandbox runtime
+is unreachable the PR gets an honest "sandbox unavailable" check rather than
+silence.
+
+**Dashboard** — set `BUGGIES_ADMIN_TOKEN` and `serve` also mounts a React admin
+dashboard (JSON API + SPA) on a separate loopback port: every job and its state,
+each finding with its reproduction proof, per-repo spend against budget, and
+live settings. It is bearer-token-gated and never shares the public webhook
+listener.
 
 ## Layout
 
@@ -52,6 +70,7 @@ stripped, and the model never sees repository secrets.
 | `cmd/buggies` | CLI: `review`, `index`, `radius`, `serve`, `mcp`, `version` |
 | `internal/pipeline` | the left door: scope → triad → verify → store |
 | `internal/unattended` | the serve worker: queue → review → post, with skip handling |
+| `internal/api` + `web` | admin dashboard: bearer-gated JSON API and React/Vite SPA |
 | `internal/queue` | SQLite job queue, idempotency, retries |
 | `internal/integrations/github` | GitHub App: webhook, installation tokens, review + check-run posters |
 | `internal/agents` | proposer / skeptic / prover — conservative, stop-early |
@@ -62,6 +81,7 @@ stripped, and the model never sees repository secrets.
 | `internal/store` | Buggies' own finding store (encrypted, minimal retention) |
 | `internal/scaffold` | deterministic pre-filters (eslint, tsc) |
 | `internal/surfaces/{prcomment,checkrun}` | renders the PR comment and CI check |
+| `cmd/buggies-eval` + `internal/eval` | precision/recall harness over the seeded-bug fixtures |
 | `deploy` | self-hosted compose + WSL sandbox setup |
 | `testdata` | seeded-bug fixture repos — the start of the eval corpus |
 
@@ -72,8 +92,8 @@ CLI on PATH (or `BUGGIES_MODEL_BACKEND=anthropic` with `ANTHROPIC_API_KEY`).
 Sandbox images are prebuilt; build them once from the kernel repo:
 
 ```sh
-# one-time: build the sandbox image (from the kernel repo root)
-docker build -t buggies/sandbox-node:22 ../sandbox/images/node
+# one-time: build the sandbox images (from the kernel repo root)
+make images            # buggies/sandbox-{node:22,python:3.13,egress}
 
 # one-shot: review a diff — reproduces any finding before reporting it
 BUGGIES_CLAUDE_BIN=claude ./bin/buggies review \
@@ -85,11 +105,11 @@ Buggies **refuses to run untrusted code on runc**; install gVisor so the sandbox
 runs under `runsc`. On a dev machine without it, `BUGGIES_ALLOW_RUNC=1` opts out
 (never in production).
 
-Run unattended:
+Run unattended (add `BUGGIES_ADMIN_TOKEN` to also serve the dashboard):
 
 ```sh
 BUGGIES_WEBHOOK_SECRET=…  BUGGIES_GITHUB_APP_ID=…  BUGGIES_GITHUB_APP_KEY=/path/key.pem \
-BUGGIES_CLAUDE_BIN=claude  ./bin/buggies serve --addr :8080
+BUGGIES_CLAUDE_BIN=claude  BUGGIES_ADMIN_TOKEN=…  ./bin/buggies serve --addr :8080
 ```
 
 See [OPERATING.md](OPERATING.md) for the full env (`BUGGIES_BUDGET_CENTS`,
@@ -98,12 +118,18 @@ systemd unit.
 
 ## Status
 
-**v1.0.0 — unattended review is live.** M1–M12 complete: scaffold, gVisor
-sandbox (no network, read-only rootfs, resource caps, registry-only egress
-proxy), the tree-sitter + SQLite code graph, the triad (conservative agents,
-cascade proof, encrypted store, stable IDs), and the `serve` GitHub App
-(webhook → queue → installation checkout → review → check run + comment),
-proven end-to-end against a live pull request under gVisor.
+**v1.0.0 — unattended review is live, and has caught a real bug.** On a live
+GitHub pull request, the `serve` daemon reproduced a seeded correctness
+regression (a short-flag match silently dropped) end-to-end under gVisor and
+posted an inline review comment carrying the failing test — webhook → queue →
+installation checkout → scope → triad → sandbox reproduction → check run +
+comment, untouched by human hands. On the eval fixtures it reproduces the
+seeded data-loss bugs and flags **nothing** on a behavior-preserving refactor.
+
+M1–M12 complete: scaffold, gVisor sandbox (no network, read-only rootfs,
+resource caps, registry-only egress proxy), the tree-sitter + SQLite code graph,
+the triad (conservative agents, cascade proof, encrypted store, stable IDs), the
+`serve` GitHub App, a Node + Python sandbox, and the admin dashboard.
 
 ## Local development
 
