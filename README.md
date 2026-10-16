@@ -22,6 +22,55 @@ Start with [VISION.md](VISION.md), then [ARCHITECTURE.md](ARCHITECTURE.md),
 [STACK.md](STACK.md), [USAGE.md](USAGE.md), [OPERATING.md](OPERATING.md),
 [ROADMAP.md](ROADMAP.md).
 
+## See it work
+
+Two surfaces, both real. Below is an actual review of a seeded bug
+(`gold-tier-discount`): a head commit capitalizes `'gold'`, so gold-tier
+customers silently stop getting their 20% discount. Buggies reproduced it in the
+sandbox before saying a word.
+
+**What it posts on the pull request** — claim, severity badge, the failing test
+it reproduced, and the fix:
+
+> **applyDiscount no longer applies the 20% discount to users whose tier is 'gold', so they are charged full price.**
+>
+> `Correctness · Reproduced × Data-loss` · **blocking**
+>
+> <details><summary>Failing test — reproduced 2/2 runs in the sandbox</summary>
+>
+> ```js
+> import { test } from 'node:test';
+> import assert from 'node:assert/strict';
+> import { applyDiscount } from '../discount.js';
+>
+> test('applyDiscount gives gold-tier users 20% off', () => {
+>   assert.equal(applyDiscount({ tier: 'gold' }, 100), 80);
+> });
+> ```
+> </details>
+>
+> <details><summary>Suggested fix</summary>
+>
+> ```diff
+>  export function applyDiscount(user, price) {
+> -  if (user.tier === 'Gold') return price * 0.8;
+> +  if (user.tier === 'gold') return price * 0.8;
+>    return price;
+>  }
+> ```
+> </details>
+>
+> _Reproduced in sandbox (buggies/sandbox-node:22, failed)._
+
+**The admin dashboard** — every job, finding, and dollar spent, on a
+loopback-only mux (`BUGGIES_ADMIN_TOKEN`):
+
+![Buggies admin dashboard — Overview](docs/dashboard-overview.jpg)
+
+Run it yourself against any data root with
+[`deploy/capture-dashboard.sh`](deploy/capture-dashboard.sh); stand up a public,
+click-through demo on GitHub with [`deploy/DEMO.md`](deploy/DEMO.md).
+
 ## How it works
 
 ```
