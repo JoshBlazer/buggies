@@ -39,7 +39,12 @@ WORKDIR /src/buggies
 # GOWORK=off ignores the dev-only go.work; GOFLAGS=-mod=mod lets the build
 # update the module graph across the two-module kernel closure (a plain
 # `go build` may not resolve everything). Matches the documented build line.
-ENV GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=0
+# CGO must stay ENABLED: the kernel's tree-sitter grammar packages are C
+# bindings, so CGO_ENABLED=0 excludes all their Go files and the build fails
+# ("build constraints exclude all Go files in .../grammar"). The golang-bookworm
+# builder ships gcc; the resulting binary links glibc, which the slim runtime
+# base provides.
+ENV GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go build -o /out/buggies ./cmd/buggies
