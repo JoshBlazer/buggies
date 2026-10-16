@@ -15,36 +15,18 @@ import (
 	"github.com/joshblazer/buggies/internal/budget"
 	"github.com/joshblazer/buggies/internal/integrations/github"
 	"github.com/joshblazer/buggies/internal/queue"
+	"github.com/joshblazer/buggies/internal/surfaces/checkrun"
 )
 
 // ---- overview ---------------------------------------------------------------
-
-type overviewDTO struct {
-	ReposActive         int            `json:"reposActive"`
-	Installations       int            `json:"installations"`
-	PrsReviewed         int            `json:"prsReviewed"`
-	OpenFindings        int            `json:"openFindings"`
-	BlockingFindings    int            `json:"blockingFindings"`
-	ReproducedFindings  int            `json:"reproducedFindings"`
-	AttributedIncidents int            `json:"attributedIncidents"`
-	DismissalRate       float64        `json:"dismissalRate"`
-	SpentCents          int            `json:"spentCents"`
-	LimitCents          int            `json:"limitCents"`
-	FindingsByType      map[string]int `json:"findingsByType"`
-	RecentJobs          []jobDTO       `json:"recentJobs"`
-}
 
 func (a *api) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := a.now()
 	repos := a.allRepos(ctx)
 
-	var acc repoTally
-	acc.byType = map[string]int{}
-	acc.byState = map[string]int{}
-	acc.byConf = map[string]int{}
+	acc := repoTally{byType: map[string]int{}, byState: map[string]int{}, byConf: map[string]int{}}
 	tallies := a.repoTallies(ctx, repos)
-	installs := map[int64]bool{}
 	spent := 0
 	for _, repo := range repos {
 		tallies[repo].mergeInto(&acc)
@@ -53,55 +35,28 @@ func (a *api) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	prsReviewed := 0
+	// Queue depth by state across the whole queue.
+	var qd queueDepthDTO
 	if a.d.Jobs != nil {
-		if n, err := a.d.Jobs.Count(ctx, queue.Done); err == nil {
-			prsReviewed = n
-		}
-	}
-
-	var recent []jobDTO
-	if a.d.Jobs != nil {
-		recs, _, err := a.d.Jobs.List(ctx, queue.Filter{Limit: 10})
-		if err != nil {
-			a.writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		for _, rec := range recs {
-			recent = append(recent, mapJob(rec, tallies[rec.Repo]))
-			if id := installationID(rec); id != 0 {
-				installs[id] = true
-			}
-		}
-	}
-	// Count installations across every repo, not only the recent ten.
-	for _, id := range a.installationsByRepo(ctx, repos) {
-		if id != 0 {
-			installs[id] = true
-		}
-	}
-
-	dismissalRate := 0.0
-	if acc.decided > 0 {
-		dismissalRate = float64(acc.dismissed) / float64(acc.decided)
-	}
-	if acc.byType == nil {
-		acc.byType = map[string]int{}
+		qd.Queued, _ = a.d.Jobs.Count(ctx, queue.Queued)
+		qd.Running, _ = a.d.Jobs.Count(ctx, queue.Running)
+		qd.Done, _ = a.d.Jobs.Count(ctx, queue.Done)
+		qd.Failed, _ = a.d.Jobs.Count(ctx, queue.Failed)
 	}
 
 	a.writeJSON(w, http.StatusOK, overviewDTO{
-		ReposActive:         len(repos),
-		Installations:       len(installs),
-		PrsReviewed:         prsReviewed,
-		OpenFindings:        acc.open,
-		BlockingFindings:    acc.blocking,
-		ReproducedFindings:  acc.reproduced,
-		AttributedIncidents: acc.attributed,
-		DismissalRate:       dismissalRate,
-		SpentCents:          spent,
-		LimitCents:          a.budgetCents(),
-		FindingsByType:      acc.byType,
-		RecentJobs:          recent,
+		Queue: qd,
+		Findings: overviewFindingsDTO{
+			Total:        acc.total,
+			Blocking:     acc.blocking,
+			ByState:      acc.byState,
+			ByConfidence: acc.byConf,
+		},
+		Repos:       len(repos),
+		Month:       now.Format("2006-01"),
+		SpendCents:  spent,
+		BudgetCents: a.budgetCents(),
+		GeneratedAt: rfc3339(now),
 	})
 }
 
@@ -123,14 +78,11 @@ func (a *api) handleJobs(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Tally once per distinct repo in this page.
-	repos := distinctRepos(recs)
-	tallies := a.repoTallies(ctx, repos)
 	items := make([]jobDTO, 0, len(recs))
 	for _, rec := range recs {
-		items = append(items, mapJob(rec, tallies[rec.Repo]))
+		items = append(items, mapJob(rec))
 	}
-	a.writeJSON(w, http.StatusOK, page(items, total))
+	a.writeJSON(w, http.StatusOK, jobsPageDTO{Jobs: items, Total: total})
 }
 
 func (a *api) handleJob(w http.ResponseWriter, r *http.Request) {
@@ -149,12 +101,33 @@ func (a *api) handleJob(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	tally := a.repoTallies(ctx, []string{rec.Repo})[rec.Repo]
-	a.writeJSON(w, http.StatusOK, mapJob(rec, tally))
+	// findings.db is per-repo, not per-head, so a job's "findings" are the
+	// repo's findings (the honest best the on-disk data offers). The check
+	// conclusion/title are recomputed from them the same way the posted check is.
+	var fs []finding.Finding
+	_ = a.withStore(rec.Repo, func(s FindingStore) error {
+		list, err := s.List(ctx, finding.Query{Repo: rec.Repo})
+		if err != nil {
+			return err
+		}
+		fs = list
+		return nil
+	})
+	sortFindings(fs)
+	summaries := make([]findingSummaryDTO, 0, len(fs))
+	for _, f := range fs {
+		summaries = append(summaries, mapFindingSummary(f))
+	}
+	cr := checkrun.Render(fs)
+	a.writeJSON(w, http.StatusOK, jobDetailDTO{
+		Job:      mapJob(rec),
+		Findings: summaries,
+		Check:    checkDTO{Conclusion: cr.Conclusion, Title: cr.Title},
+	})
 }
 
 type requeueDTO struct {
-	ID    string `json:"id"`
+	ID    int64  `json:"id"`
 	State string `json:"state"`
 }
 
@@ -176,7 +149,7 @@ func (a *api) handleRequeue(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, requeueDTO{ID: strconv.FormatInt(id, 10), State: string(queue.Queued)})
+	a.writeJSON(w, http.StatusOK, requeueDTO{ID: id, State: string(queue.Queued)})
 }
 
 // ---- installations / repos --------------------------------------------------
@@ -328,9 +301,10 @@ func (a *api) handleFindings(w http.ResponseWriter, r *http.Request) {
 		query.MinConfidence = conf
 	}
 
+	repoParam := q.Get("repo")
 	var repos []string
-	if repo := q.Get("repo"); repo != "" {
-		repos = []string{repo}
+	if repoParam != "" {
+		repos = []string{repoParam}
 	} else {
 		repos = a.allRepos(ctx)
 	}
@@ -354,15 +328,19 @@ func (a *api) handleFindings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sortFindings(all)
-	total := len(all)
 	if query.Limit > 0 && len(all) > query.Limit {
 		all = all[:query.Limit]
 	}
-	items := make([]findingDTO, 0, len(all))
+	items := make([]findingSummaryDTO, 0, len(all))
 	for _, f := range all {
-		items = append(items, mapFinding(f))
+		items = append(items, mapFindingSummary(f))
 	}
-	a.writeJSON(w, http.StatusOK, page(items, total))
+	a.writeJSON(w, http.StatusOK, findingsResponseDTO{Repo: repoParam, Findings: items})
+}
+
+type findingsResponseDTO struct {
+	Repo     string              `json:"repo"`
+	Findings []findingSummaryDTO `json:"findings"`
 }
 
 func (a *api) handleFinding(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +355,7 @@ func (a *api) handleFinding(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, mapFinding(f))
+	a.writeJSON(w, http.StatusOK, mapFindingDetail(f))
 }
 
 func (a *api) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -457,77 +435,82 @@ func (a *api) handleTransition(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, mapFinding(updated))
+	a.writeJSON(w, http.StatusOK, transitionResultDTO{
+		ID:        id,
+		State:     string(updated.State),
+		UpdatedAt: rfc3339(updated.UpdatedAt),
+	})
 }
 
 // ---- budget -----------------------------------------------------------------
 
-type repoSpendDTO struct {
+type budgetRepoDTO struct {
 	Repo       string `json:"repo"`
-	Period     string `json:"period"`
 	SpentCents int    `json:"spentCents"`
-	LimitCents int    `json:"limitCents"`
-	Reviews    int    `json:"reviews"`
-	ModelCalls int    `json:"modelCalls"`
-	OverBudget bool   `json:"overBudget"`
+	Allowed    bool   `json:"allowed"`
+	Note       string `json:"note"`
 }
 
-type budgetSummaryDTO struct {
-	Period          string         `json:"period"`
-	TotalSpentCents int            `json:"totalSpentCents"`
-	TotalLimitCents int            `json:"totalLimitCents"`
-	Repos           []repoSpendDTO `json:"repos"`
+type budgetDTO struct {
+	Month       string          `json:"month"`
+	BudgetCents int             `json:"budgetCents"`
+	Repos       []budgetRepoDTO `json:"repos"`
 }
 
 func (a *api) handleBudget(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := a.now()
-	period := budget.Policy{}.Period(now)
 	capCents := a.budgetCents()
 	pol := budget.Policy{MonthlyLimitCents: capCents}
 	repos := a.allRepos(ctx)
 
-	var rows []repoSpendDTO
-	totalSpent := 0
+	rows := make([]budgetRepoDTO, 0, len(repos))
 	for _, repo := range repos {
 		spent, _ := a.d.Ledger.Spent(ctx, repo, now)
-		allow, _, _ := a.d.Ledger.Allow(ctx, repo, pol, now)
-		reviews := 0
-		if a.d.Jobs != nil {
-			if _, n, err := a.d.Jobs.List(ctx, queue.Filter{Repo: repo, State: queue.Done}); err == nil {
-				reviews = n
-			}
-		}
-		totalSpent += spent
-		rows = append(rows, repoSpendDTO{
+		allow, note, _ := a.d.Ledger.Allow(ctx, repo, pol, now)
+		rows = append(rows, budgetRepoDTO{
 			Repo:       repo,
-			Period:     period,
 			SpentCents: spent,
-			LimitCents: capCents,
-			Reviews:    reviews,
-			OverBudget: !allow,
+			Allowed:    allow,
+			Note:       note,
 		})
 	}
-	if rows == nil {
-		rows = []repoSpendDTO{}
-	}
-	a.writeJSON(w, http.StatusOK, budgetSummaryDTO{
-		Period:          period,
-		TotalSpentCents: totalSpent,
-		TotalLimitCents: capCents * len(repos),
-		Repos:           rows,
+	a.writeJSON(w, http.StatusOK, budgetDTO{
+		Month:       now.Format("2006-01"),
+		BudgetCents: capCents,
+		Repos:       rows,
 	})
 }
 
 // ---- settings ---------------------------------------------------------------
 
+type settingsEditableDTO struct {
+	BudgetCents int `json:"budgetCents"`
+}
+
+type settingsReadOnlyDTO struct {
+	Addr            string `json:"addr"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	GithubHost      string `json:"githubHost"`
+	GithubAppID     int64  `json:"githubAppID"`
+	SkillsEnabled   bool   `json:"skillsEnabled"`
+	AllowRunc       bool   `json:"allowRunc"`
+	DataRoot        string `json:"dataRoot"`
+	KernelVersion   string `json:"kernelVersion"`
+}
+
 type settingsDTO struct {
-	BudgetCents           int    `json:"budgetCents"`
-	MinConfidence         string `json:"minConfidence"`
-	PostAdvisory          bool   `json:"postAdvisory"`
-	SkillsEnabled         bool   `json:"skillsEnabled"`
-	GithubHost            string `json:"githubHost"`
-	WorkerIntervalSeconds int    `json:"workerIntervalSeconds"`
+	Editable         settingsEditableDTO `json:"editable"`
+	ReadOnly         settingsReadOnlyDTO `json:"readOnly"`
+	HasWebhookSecret bool                `json:"hasWebhookSecret"`
+	HasAppKey        bool                `json:"hasAppKey"`
+	HasStoreKey      bool                `json:"hasStoreKey"`
+}
+
+// budgetUpdateDTO is the PUT /api/settings body and response: the sole editable
+// field is the per-repo monthly budget cap.
+type budgetUpdateDTO struct {
+	BudgetCents int `json:"budgetCents"`
 }
 
 func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -540,9 +523,8 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	dec := json.NewDecoder(r.Body)
-	var in settingsDTO
-	if err := dec.Decode(&in); err != nil {
+	var in budgetUpdateDTO
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		a.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -556,33 +538,29 @@ func (a *api) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur.BudgetCents = in.BudgetCents
-	cur.PostAdvisory = in.PostAdvisory
-	if in.MinConfidence != "" {
-		conf, ok := parseConfidence(in.MinConfidence)
-		if !ok {
-			a.writeError(w, http.StatusBadRequest, "invalid minConfidence")
-			return
-		}
-		cur.MinConfidence = conf
-	}
-	// SkillsEnabled, GithubHost, WorkerIntervalSeconds are read-only daemon
-	// config: accepted in the payload (the GUI PUTs the whole object) but never
-	// applied — the response always reflects the live config values.
 	if err := a.d.Settings.Set(cur); err != nil {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, a.settingsView(cur))
+	a.writeJSON(w, http.StatusOK, budgetUpdateDTO{BudgetCents: cur.BudgetCents})
 }
 
 func (a *api) settingsView(s AdminSettings) settingsDTO {
 	return settingsDTO{
-		BudgetCents:           s.BudgetCents,
-		MinConfidence:         s.MinConfidence.String(),
-		PostAdvisory:          s.PostAdvisory,
-		SkillsEnabled:         a.d.Config.SkillsEnabled,
-		GithubHost:            a.d.Config.GitHubHost,
-		WorkerIntervalSeconds: a.d.Config.IntervalSeconds,
+		Editable: settingsEditableDTO{BudgetCents: s.BudgetCents},
+		ReadOnly: settingsReadOnlyDTO{
+			Addr:            a.d.Config.Addr,
+			IntervalSeconds: a.d.Config.IntervalSeconds,
+			GithubHost:      a.d.Config.GitHubHost,
+			GithubAppID:     a.d.Config.GitHubAppID,
+			SkillsEnabled:   a.d.Config.SkillsEnabled,
+			AllowRunc:       a.d.Config.AllowRunc,
+			DataRoot:        a.d.Config.DataRoot,
+			KernelVersion:   a.d.Config.KernelVersion,
+		},
+		HasWebhookSecret: a.d.Config.HasWebhookSecret,
+		HasAppKey:        a.d.Config.HasAppKey,
+		HasStoreKey:      a.d.Config.HasStoreKey,
 	}
 }
 

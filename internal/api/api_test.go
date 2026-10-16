@@ -331,56 +331,56 @@ func TestOverview(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	ov := decode[overviewDTO](t, w)
-	if ov.ReposActive != 2 {
-		t.Errorf("reposActive = %d, want 2", ov.ReposActive)
+	if ov.Repos != 2 {
+		t.Errorf("repos = %d, want 2", ov.Repos)
 	}
-	if ov.Installations != 2 {
-		t.Errorf("installations = %d, want 2", ov.Installations)
+	if ov.Queue.Running != 1 || ov.Queue.Done != 1 || ov.Queue.Failed != 1 {
+		t.Errorf("queue depth = %+v, want running/done/failed = 1/1/1", ov.Queue)
 	}
-	if ov.PrsReviewed != 1 {
-		t.Errorf("prsReviewed = %d, want 1 (one done job)", ov.PrsReviewed)
+	if ov.Findings.Total != 1 {
+		t.Errorf("findings.total = %d, want 1", ov.Findings.Total)
 	}
-	if ov.BlockingFindings != 1 {
-		t.Errorf("blockingFindings = %d, want 1", ov.BlockingFindings)
+	if ov.Findings.Blocking != 1 {
+		t.Errorf("findings.blocking = %d, want 1", ov.Findings.Blocking)
 	}
-	if ov.SpentCents != 1200 {
-		t.Errorf("spentCents = %d, want 1200", ov.SpentCents)
+	if ov.Findings.ByConfidence["reproduced"] != 1 {
+		t.Errorf("findings.byConfidence[reproduced] = %d, want 1", ov.Findings.ByConfidence["reproduced"])
 	}
-	if ov.LimitCents != 5000 {
-		t.Errorf("limitCents = %d, want 5000", ov.LimitCents)
+	if ov.SpendCents != 1200 {
+		t.Errorf("spendCents = %d, want 1200", ov.SpendCents)
 	}
-	if ov.FindingsByType["correctness"] != 1 {
-		t.Errorf("findingsByType[correctness] = %d, want 1", ov.FindingsByType["correctness"])
+	if ov.BudgetCents != 5000 {
+		t.Errorf("budgetCents = %d, want 5000", ov.BudgetCents)
 	}
-	if len(ov.RecentJobs) != 3 {
-		t.Errorf("recentJobs = %d, want 3", len(ov.RecentJobs))
+	if ov.Month != "2026-10" {
+		t.Errorf("month = %q, want 2026-10", ov.Month)
 	}
 }
 
 func TestJobsList(t *testing.T) {
 	h, _, _, _ := newTestAPI()
 	w := do(t, h, "GET", "/api/jobs", "", true)
-	pg := decode[pageDTO[jobDTO]](t, w)
-	if pg.Total != 3 || len(pg.Items) != 3 {
-		t.Fatalf("got total=%d items=%d, want 3/3", pg.Total, len(pg.Items))
+	pg := decode[jobsPageDTO](t, w)
+	if pg.Total != 3 || len(pg.Jobs) != 3 {
+		t.Fatalf("got total=%d jobs=%d, want 3/3", pg.Total, len(pg.Jobs))
 	}
-	// failed queue state must surface as "error" in the GUI vocabulary.
+	// The job state is the raw queue state (contract JobState), not a GUI alias.
 	var widgets jobDTO
-	for _, j := range pg.Items {
+	for _, j := range pg.Jobs {
 		if j.Repo == "acme/widgets" {
 			widgets = j
 		}
 	}
-	if widgets.Status != "error" {
-		t.Errorf("failed job status = %q, want error", widgets.Status)
+	if widgets.State != "failed" {
+		t.Errorf("failed job state = %q, want failed", widgets.State)
 	}
-	if widgets.ID != "1" {
-		t.Errorf("job id = %q, want \"1\"", widgets.ID)
+	if widgets.ID != 1 {
+		t.Errorf("job id = %d, want 1", widgets.ID)
 	}
 
 	// Filter by repo.
 	w = do(t, h, "GET", "/api/jobs?repo=acme/widgets", "", true)
-	pg = decode[pageDTO[jobDTO]](t, w)
+	pg = decode[jobsPageDTO](t, w)
 	if pg.Total != 1 {
 		t.Errorf("repo-filtered total = %d, want 1", pg.Total)
 	}
@@ -392,15 +392,15 @@ func TestJobDetail(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
 	}
-	j := decode[jobDTO](t, w)
-	if j.Number != 7 || j.Owner != "acme" || j.HeadSha != "deadbeef" {
-		t.Errorf("unexpected job: %+v", j)
+	jd := decode[jobDetailDTO](t, w)
+	if jd.Job.Number != 7 || jd.Job.HeadSHA != "deadbeef" || jd.Job.InstallationID != 42 {
+		t.Errorf("unexpected job: %+v", jd.Job)
 	}
-	if j.FindingCount != 1 || j.BlockingCount != 1 {
-		t.Errorf("findingCount=%d blockingCount=%d, want 1/1", j.FindingCount, j.BlockingCount)
+	if len(jd.Findings) != 1 {
+		t.Errorf("findings = %d, want 1", len(jd.Findings))
 	}
-	if j.Conclusion != "failure" {
-		t.Errorf("conclusion = %q, want failure (a blocking finding)", j.Conclusion)
+	if jd.Check.Conclusion != "failure" {
+		t.Errorf("check.conclusion = %q, want failure (a blocking finding)", jd.Check.Conclusion)
 	}
 
 	// Unknown id -> 404.
@@ -424,7 +424,7 @@ func TestRequeue(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	rq := decode[requeueDTO](t, w)
-	if rq.ID != "3" || rq.State != "queued" {
+	if rq.ID != 3 || rq.State != "queued" {
 		t.Errorf("unexpected requeue response: %+v", rq)
 	}
 	if len(jobs.requeued) != 1 || jobs.requeued[0] != 3 {
@@ -468,34 +468,31 @@ func TestFindingsList(t *testing.T) {
 
 	// Repo-scoped.
 	w := do(t, h, "GET", "/api/findings?repo=acme/shop", "", true)
-	pg := decode[pageDTO[findingDTO]](t, w)
-	if pg.Total != 1 {
-		t.Fatalf("repo findings = %d, want 1", pg.Total)
+	resp := decode[findingsResponseDTO](t, w)
+	if resp.Repo != "acme/shop" || len(resp.Findings) != 1 {
+		t.Fatalf("repo findings resp = %+v, want repo acme/shop with 1 finding", resp)
 	}
-	f := pg.Items[0]
-	if f.Confidence != "reproduced" || f.Impact != "data-loss" || !f.Blocking {
-		t.Errorf("unexpected finding dto: %+v", f)
+	f := resp.Findings[0]
+	if f.Confidence != "reproduced" || f.Impact != "data-loss" || !f.Blocking || !f.Reproduced {
+		t.Errorf("unexpected finding summary: %+v", f)
 	}
-	if f.Proof == nil || f.Proof.Image != "node:20-bookworm" || len(f.Proof.Runs) != 1 {
-		t.Errorf("proof not mapped: %+v", f.Proof)
-	}
-	if f.Proof.Runs[0].DurationMs != 1500 {
-		t.Errorf("durationMs = %d, want 1500", f.Proof.Runs[0].DurationMs)
+	if f.Path != "src/discount.ts" || f.Symbol != "applyDiscount" {
+		t.Errorf("flat location not mapped: %+v", f)
 	}
 
 	// Aggregate across all repos (no repo param).
 	w = do(t, h, "GET", "/api/findings", "", true)
-	pg = decode[pageDTO[findingDTO]](t, w)
-	if pg.Total != 1 {
-		t.Errorf("aggregate findings = %d, want 1", pg.Total)
+	resp = decode[findingsResponseDTO](t, w)
+	if len(resp.Findings) != 1 {
+		t.Errorf("aggregate findings = %d, want 1", len(resp.Findings))
 	}
 
 	// minConfidence filter above the finding's confidence yields none... but the
 	// finding IS reproduced (max), so filtering at reproduced keeps it.
 	w = do(t, h, "GET", "/api/findings?repo=acme/shop&minConfidence=reproduced", "", true)
-	pg = decode[pageDTO[findingDTO]](t, w)
-	if pg.Total != 1 {
-		t.Errorf("minConfidence=reproduced total = %d, want 1", pg.Total)
+	resp = decode[findingsResponseDTO](t, w)
+	if len(resp.Findings) != 1 {
+		t.Errorf("minConfidence=reproduced findings = %d, want 1", len(resp.Findings))
 	}
 
 	// Bad confidence -> 400.
@@ -512,9 +509,21 @@ func TestFindingDetailAndResolveWithoutRepo(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	f := decode[findingDTO](t, w)
+	f := decode[findingDetailDTO](t, w)
 	if f.ID != "f_blocking" || f.Location.Repo != "acme/shop" {
 		t.Errorf("unexpected finding: %+v", f)
+	}
+	if f.Proof == nil || len(f.Proof.Result.Runs) != 1 {
+		t.Fatalf("proof not mapped: %+v", f.Proof)
+	}
+	if f.Proof.Result.Runs[0].Image != "node:20-bookworm" || f.Proof.Result.Runs[0].TimingMs != 1500 {
+		t.Errorf("proof run not mapped: %+v", f.Proof.Result.Runs[0])
+	}
+	if !f.Proof.Result.Reproducible || f.Proof.Test.Path != "src/__buggies__/discount.test.ts" {
+		t.Errorf("proof result/test not mapped: %+v", f.Proof)
+	}
+	if f.RenderedMarkdown == "" {
+		t.Errorf("renderedMarkdown is empty")
 	}
 
 	// Unknown id -> 404.
@@ -545,9 +554,9 @@ func TestTransition(t *testing.T) {
 				t.Fatalf("status = %d, want %d (%s)", w.Code, tc.want, w.Body.String())
 			}
 			if tc.want == http.StatusOK {
-				f := decode[findingDTO](t, w)
-				if f.State == "verified" {
-					t.Errorf("state not updated: %+v", f)
+				r := decode[transitionResultDTO](t, w)
+				if r.ID != "f_blocking" || r.State == "verified" || r.State == "" {
+					t.Errorf("state not updated: %+v", r)
 				}
 			}
 		})
@@ -583,24 +592,26 @@ func TestHistory(t *testing.T) {
 func TestBudget(t *testing.T) {
 	h, _, _, _ := newTestAPI()
 	w := do(t, h, "GET", "/api/budget", "", true)
-	bs := decode[budgetSummaryDTO](t, w)
-	if bs.Period != "2026-10" {
-		t.Errorf("period = %q, want 2026-10", bs.Period)
+	bs := decode[budgetDTO](t, w)
+	if bs.Month != "2026-10" {
+		t.Errorf("month = %q, want 2026-10", bs.Month)
 	}
-	if bs.TotalSpentCents != 1200 {
-		t.Errorf("totalSpentCents = %d, want 1200", bs.TotalSpentCents)
+	if bs.BudgetCents != 5000 {
+		t.Errorf("budgetCents = %d, want 5000", bs.BudgetCents)
 	}
-	var shop repoSpendDTO
+	var shop budgetRepoDTO
+	found := false
 	for _, r := range bs.Repos {
 		if r.Repo == "acme/shop" {
 			shop = r
+			found = true
 		}
 	}
-	if shop.SpentCents != 1200 || shop.LimitCents != 5000 {
-		t.Errorf("acme/shop spend: %+v", shop)
+	if !found {
+		t.Fatalf("acme/shop not in budget rows: %+v", bs.Repos)
 	}
-	if shop.Reviews != 1 {
-		t.Errorf("acme/shop reviews = %d, want 1", shop.Reviews)
+	if shop.SpentCents != 1200 || !shop.Allowed {
+		t.Errorf("acme/shop budget row: %+v (want spent 1200, allowed true)", shop)
 	}
 }
 
@@ -609,28 +620,33 @@ func TestSettingsGetAndPut(t *testing.T) {
 
 	w := do(t, h, "GET", "/api/settings", "", true)
 	s := decode[settingsDTO](t, w)
-	if s.BudgetCents != 5000 || s.MinConfidence != "reproduced" || !s.PostAdvisory {
-		t.Errorf("unexpected settings: %+v", s)
+	if s.Editable.BudgetCents != 5000 {
+		t.Errorf("editable.budgetCents = %d, want 5000", s.Editable.BudgetCents)
 	}
-	if s.GithubHost != "github.com" || s.WorkerIntervalSeconds != 15 || !s.SkillsEnabled {
-		t.Errorf("read-only config not reflected: %+v", s)
+	if s.ReadOnly.GithubHost != "github.com" || s.ReadOnly.IntervalSeconds != 15 || !s.ReadOnly.SkillsEnabled {
+		t.Errorf("read-only config not reflected: %+v", s.ReadOnly)
+	}
+	if !s.HasWebhookSecret {
+		t.Errorf("hasWebhookSecret = false, want true")
 	}
 
-	// Valid PUT updates the editable fields.
-	w = do(t, h, "PUT", "/api/settings", `{"budgetCents":8000,"minConfidence":"statically-proven","postAdvisory":false,"githubHost":"ignored.example"}`, true)
+	// Valid PUT updates the one editable field; extra keys are ignored.
+	w = do(t, h, "PUT", "/api/settings", `{"budgetCents":8000,"githubHost":"ignored.example"}`, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("put status %d: %s", w.Code, w.Body.String())
 	}
-	s = decode[settingsDTO](t, w)
-	if s.BudgetCents != 8000 || s.MinConfidence != "statically-proven" || s.PostAdvisory {
-		t.Errorf("put did not apply editable fields: %+v", s)
-	}
-	// Read-only field in the payload must be ignored.
-	if s.GithubHost != "github.com" {
-		t.Errorf("read-only githubHost was overwritten: %q", s.GithubHost)
+	upd := decode[budgetUpdateDTO](t, w)
+	if upd.BudgetCents != 8000 {
+		t.Errorf("put response budgetCents = %d, want 8000", upd.BudgetCents)
 	}
 	if settings.s.BudgetCents != 8000 {
 		t.Errorf("budget not persisted: %d", settings.s.BudgetCents)
+	}
+	// Read-only config is untouched by the PUT.
+	w = do(t, h, "GET", "/api/settings", "", true)
+	s = decode[settingsDTO](t, w)
+	if s.ReadOnly.GithubHost != "github.com" || s.Editable.BudgetCents != 8000 {
+		t.Errorf("post-put settings wrong: %+v", s)
 	}
 
 	// Negative budget -> 400.

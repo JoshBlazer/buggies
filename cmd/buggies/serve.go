@@ -221,8 +221,10 @@ func serveCmd(ctx context.Context, args []string) error {
 			Settings: &api.FileSettings{Path: filepath.Join(root, "admin-settings.json"), Defaults: api.AdminSettings{BudgetCents: budgetCents}},
 			Config: api.Config{
 				Addr:             *addr,
+				IntervalSeconds:  int((*interval).Seconds()),
 				GitHubHost:       host,
 				GitHubAppID:      appID,
+				SkillsEnabled:    os.Getenv("BUGGIES_SKILLS") != "off",
 				AllowRunc:        os.Getenv("BUGGIES_ALLOW_RUNC") != "",
 				DataRoot:         root,
 				HasWebhookSecret: secret != "",

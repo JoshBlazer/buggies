@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"strconv"
 	"time"
 
 	"github.com/joshblazer/kernel/finding"
@@ -11,6 +10,7 @@ import (
 	"github.com/joshblazer/buggies/internal/queue"
 	"github.com/joshblazer/buggies/internal/store"
 	"github.com/joshblazer/buggies/internal/surfaces/checkrun"
+	"github.com/joshblazer/buggies/internal/surfaces/prcomment"
 )
 
 // The wire DTOs below match web/src/api/types.ts exactly: camelCase fields and
@@ -18,6 +18,8 @@ import (
 // the PascalCase integer-enum default JSON of finding.Finding. Marshalling a
 // DTO keeps the wire format self-describing and decoupled from Go internals.
 
+// pageDTO is the generic {items,total} envelope used by endpoints that are not
+// part of the dashboard's typed contract (e.g. /api/installations).
 type pageDTO[T any] struct {
 	Items []T `json:"items"`
 	Total int `json:"total"`
@@ -30,44 +32,6 @@ func page[T any](items []T, total int) pageDTO[T] {
 	return pageDTO[T]{Items: items, Total: total}
 }
 
-type locationDTO struct {
-	Repo   string `json:"repo"`
-	Path   string `json:"path"`
-	Symbol string `json:"symbol"`
-	Line   int    `json:"line"`
-}
-
-type sandboxRunDTO struct {
-	Outcome    string `json:"outcome"`
-	ExitCode   int    `json:"exitCode"`
-	DurationMs int64  `json:"durationMs"`
-}
-
-type proofDTO struct {
-	TestPath     string          `json:"testPath"`
-	TestContent  string          `json:"testContent"`
-	Output       string          `json:"output"`
-	SuggestedFix string          `json:"suggestedFix"`
-	Image        string          `json:"image"`
-	Outcome      string          `json:"outcome"`
-	Runs         []sandboxRunDTO `json:"runs"`
-}
-
-type findingDTO struct {
-	ID            string      `json:"id"`
-	Type          string      `json:"type"`
-	Confidence    string      `json:"confidence"`
-	Impact        string      `json:"impact"`
-	State         string      `json:"state"`
-	Blocking      bool        `json:"blocking"`
-	Claim         string      `json:"claim"`
-	Location      locationDTO `json:"location"`
-	Proof         *proofDTO   `json:"proof"`
-	CreatedAt     string      `json:"createdAt"`
-	UpdatedAt     string      `json:"updatedAt"`
-	KernelVersion string      `json:"kernelVersion"`
-}
-
 func rfc3339(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -75,8 +39,180 @@ func rfc3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func mapFinding(f finding.Finding) findingDTO {
-	d := findingDTO{
+// ---- overview (types.ts Overview) -------------------------------------------
+
+type queueDepthDTO struct {
+	Queued  int `json:"queued"`
+	Running int `json:"running"`
+	Done    int `json:"done"`
+	Failed  int `json:"failed"`
+}
+
+type overviewFindingsDTO struct {
+	Total        int            `json:"total"`
+	Blocking     int            `json:"blocking"`
+	ByState      map[string]int `json:"byState"`
+	ByConfidence map[string]int `json:"byConfidence"`
+}
+
+type overviewDTO struct {
+	Queue       queueDepthDTO       `json:"queue"`
+	Findings    overviewFindingsDTO `json:"findings"`
+	Repos       int                 `json:"repos"`
+	Month       string              `json:"month"`
+	SpendCents  int                 `json:"spendCents"`
+	BudgetCents int                 `json:"budgetCents"`
+	GeneratedAt string              `json:"generatedAt"`
+}
+
+// ---- jobs (types.ts Job / JobsPage / JobDetail) -----------------------------
+
+type jobDTO struct {
+	ID             int64  `json:"id"`
+	Key            string `json:"key"`
+	Repo           string `json:"repo"`
+	Number         int    `json:"number"`
+	HeadSHA        string `json:"headSHA"`
+	BaseSHA        string `json:"baseSHA"`
+	Fork           bool   `json:"fork"`
+	InstallationID int64  `json:"installationID"`
+	Action         string `json:"action"`
+	DeliveryID     string `json:"deliveryID"`
+	State          string `json:"state"`
+	Attempts       int    `json:"attempts"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
+}
+
+// mapJob builds the job DTO from a queue record and its decoded PR payload.
+func mapJob(rec queue.Record) jobDTO {
+	var pj github.PRJob
+	_ = json.Unmarshal(rec.Payload, &pj)
+	return jobDTO{
+		ID:             rec.ID,
+		Key:            rec.Key,
+		Repo:           rec.Repo,
+		Number:         pj.Number,
+		HeadSHA:        rec.HeadSHA,
+		BaseSHA:        pj.BaseSHA,
+		Fork:           pj.Fork,
+		InstallationID: pj.InstallationID,
+		Action:         pj.Action,
+		DeliveryID:     rec.DeliveryID,
+		State:          string(rec.State),
+		Attempts:       rec.Attempts,
+		CreatedAt:      rfc3339(rec.CreatedAt),
+		UpdatedAt:      rfc3339(rec.UpdatedAt),
+	}
+}
+
+type jobsPageDTO struct {
+	Jobs  []jobDTO `json:"jobs"`
+	Total int      `json:"total"`
+}
+
+type checkDTO struct {
+	Conclusion string `json:"conclusion"`
+	Title      string `json:"title"`
+}
+
+type jobDetailDTO struct {
+	Job      jobDTO              `json:"job"`
+	Findings []findingSummaryDTO `json:"findings"`
+	Check    checkDTO            `json:"check"`
+}
+
+// ---- findings (types.ts FindingSummary / FindingDetail) ---------------------
+
+type locationDTO struct {
+	Repo   string `json:"repo"`
+	Path   string `json:"path"`
+	Symbol string `json:"symbol"`
+	Line   int    `json:"line"`
+}
+
+// findingSummaryDTO is the list-row shape: flat path/symbol/line, no proof.
+type findingSummaryDTO struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Confidence string `json:"confidence"`
+	Impact     string `json:"impact"`
+	State      string `json:"state"`
+	Claim      string `json:"claim"`
+	Blocking   bool   `json:"blocking"`
+	Path       string `json:"path"`
+	Symbol     string `json:"symbol"`
+	Line       int    `json:"line"`
+	Reproduced bool   `json:"reproduced"`
+	CreatedAt  string `json:"createdAt"`
+	UpdatedAt  string `json:"updatedAt"`
+}
+
+func mapFindingSummary(f finding.Finding) findingSummaryDTO {
+	return findingSummaryDTO{
+		ID:         f.ID,
+		Type:       string(f.Type),
+		Confidence: f.Confidence.String(),
+		Impact:     f.Impact.String(),
+		State:      string(f.State),
+		Claim:      f.Claim,
+		Blocking:   f.Blocking(),
+		Path:       f.Location.Path,
+		Symbol:     f.Location.Symbol,
+		Line:       f.Location.Line,
+		Reproduced: f.Confidence == finding.Reproduced,
+		CreatedAt:  rfc3339(f.CreatedAt),
+		UpdatedAt:  rfc3339(f.UpdatedAt),
+	}
+}
+
+type sandboxRunDTO struct {
+	Stdout       string  `json:"stdout"`
+	Stderr       string  `json:"stderr"`
+	StackTrace   string  `json:"stackTrace"`
+	ExitCode     int     `json:"exitCode"`
+	TimingMs     int64   `json:"timingMs"`
+	Image        string  `json:"image"`
+	PeakMemoryMB int64   `json:"peakMemoryMB"`
+	CPUSeconds   float64 `json:"cpuSeconds"`
+}
+
+type proofTestDTO struct {
+	Path    string   `json:"path"`
+	Content string   `json:"content"`
+	Cmd     []string `json:"cmd"`
+}
+
+type proofResultDTO struct {
+	Outcome      string          `json:"outcome"`
+	Reproducible bool            `json:"reproducible"`
+	Runs         []sandboxRunDTO `json:"runs"`
+}
+
+type proofDTO struct {
+	Test         proofTestDTO   `json:"test"`
+	Result       proofResultDTO `json:"result"`
+	SuggestedFix string         `json:"suggestedFix"`
+}
+
+type findingDetailDTO struct {
+	ID               string      `json:"id"`
+	Type             string      `json:"type"`
+	Confidence       string      `json:"confidence"`
+	Impact           string      `json:"impact"`
+	State            string      `json:"state"`
+	Blocking         bool        `json:"blocking"`
+	Claim            string      `json:"claim"`
+	Location         locationDTO `json:"location"`
+	KernelVersion    string      `json:"kernelVersion"`
+	CreatedAt        string      `json:"createdAt"`
+	UpdatedAt        string      `json:"updatedAt"`
+	Proof            *proofDTO   `json:"proof"`
+	RenderedMarkdown string      `json:"renderedMarkdown"`
+}
+
+func mapFindingDetail(f finding.Finding) findingDetailDTO {
+	d := findingDetailDTO{
 		ID:         f.ID,
 		Type:       string(f.Type),
 		Confidence: f.Confidence.String(),
@@ -90,104 +226,60 @@ func mapFinding(f finding.Finding) findingDTO {
 			Symbol: f.Location.Symbol,
 			Line:   f.Location.Line,
 		},
-		CreatedAt:     rfc3339(f.CreatedAt),
-		UpdatedAt:     rfc3339(f.UpdatedAt),
-		KernelVersion: f.KernelVersion,
+		KernelVersion:    f.KernelVersion,
+		CreatedAt:        rfc3339(f.CreatedAt),
+		UpdatedAt:        rfc3339(f.UpdatedAt),
+		RenderedMarkdown: prcomment.Render(f).Body,
 	}
 	// Proof travels only for a reproduced finding — the product promise is that
 	// the developer never sees an unproven claim dressed as a fact.
 	if f.Confidence == finding.Reproduced && f.Proof != nil {
-		ev := f.Proof.Result.Evidence()
-		output := ev.StackTrace
-		if output == "" {
-			output = ev.Stderr
-		}
 		runs := make([]sandboxRunDTO, 0, len(f.Proof.Result.Runs))
 		for _, r := range f.Proof.Result.Runs {
 			runs = append(runs, sandboxRunDTO{
-				Outcome:    string(f.Proof.Result.Outcome),
-				ExitCode:   r.ExitCode,
-				DurationMs: r.Timing.Milliseconds(),
+				Stdout:       r.Stdout,
+				Stderr:       r.Stderr,
+				StackTrace:   r.StackTrace,
+				ExitCode:     r.ExitCode,
+				TimingMs:     r.Timing.Milliseconds(),
+				Image:        r.Image,
+				PeakMemoryMB: r.Resource.PeakMemoryMB,
+				CPUSeconds:   r.Resource.CPUSeconds,
 			})
 		}
+		cmd := f.Proof.Test.Cmd
+		if cmd == nil {
+			cmd = []string{}
+		}
 		d.Proof = &proofDTO{
-			TestPath:     f.Proof.Test.Path,
-			TestContent:  string(f.Proof.Test.Content),
-			Output:       output,
+			Test:         proofTestDTO{Path: f.Proof.Test.Path, Content: string(f.Proof.Test.Content), Cmd: cmd},
+			Result:       proofResultDTO{Outcome: string(f.Proof.Result.Outcome), Reproducible: f.Proof.Result.Reproducible, Runs: runs},
 			SuggestedFix: f.Proof.SuggestedFix,
-			Image:        ev.Image,
-			Outcome:      string(f.Proof.Result.Outcome),
-			Runs:         runs,
 		}
 	}
 	return d
 }
 
-type jobDTO struct {
-	ID            string `json:"id"`
-	Owner         string `json:"owner"`
-	Repo          string `json:"repo"`
-	Number        int    `json:"number"`
-	Title         string `json:"title"`
-	Author        string `json:"author"`
-	HeadSha       string `json:"headSha"`
-	BaseSha       string `json:"baseSha"`
-	Fork          bool   `json:"fork"`
-	Status        string `json:"status"`
-	Conclusion    string `json:"conclusion"`
-	SkipReason    string `json:"skipReason,omitempty"`
-	FindingCount  int    `json:"findingCount"`
-	BlockingCount int    `json:"blockingCount"`
-	ReviewURL     string `json:"reviewUrl,omitempty"`
-	ModelCalls    int    `json:"modelCalls"`
-	CostCents     int    `json:"costCents"`
-	QueuedAt      string `json:"queuedAt"`
-	FinishedAt    string `json:"finishedAt,omitempty"`
+// ---- transitions (types.ts Transition / TransitionResult) -------------------
+
+type transitionDTO struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+	At     string `json:"at"`
 }
 
-// jobStatus maps a queue.State to the GUI's JobStatus vocabulary.
-func jobStatus(st queue.State) string {
-	switch st {
-	case queue.Failed:
-		return "error"
-	default:
-		return string(st) // queued | running | done
-	}
+func mapTransition(t store.Transition) transitionDTO {
+	return transitionDTO{From: string(t.From), To: string(t.To), Reason: t.Reason, At: rfc3339(t.At)}
 }
 
-// mapJob builds the job DTO. tally supplies the repo's finding counts and check
-// conclusion (findings.db is per-repo, so every job of a repo shares them —
-// the honest best the on-disk data offers without a per-head finding index).
-func mapJob(rec queue.Record, tally repoTally) jobDTO {
-	var pj github.PRJob
-	_ = json.Unmarshal(rec.Payload, &pj)
-	d := jobDTO{
-		ID:            strconv.FormatInt(rec.ID, 10),
-		Owner:         pj.Owner,
-		Repo:          rec.Repo,
-		Number:        pj.Number,
-		Title:         prTitle(pj.Number),
-		HeadSha:       rec.HeadSHA,
-		BaseSha:       pj.BaseSHA,
-		Fork:          pj.Fork,
-		Status:        jobStatus(rec.State),
-		Conclusion:    tally.conclusion,
-		FindingCount:  tally.total,
-		BlockingCount: tally.blocking,
-		QueuedAt:      rfc3339(rec.CreatedAt),
-	}
-	if rec.State == queue.Done || rec.State == queue.Failed {
-		d.FinishedAt = rfc3339(rec.UpdatedAt)
-	}
-	return d
+type transitionResultDTO struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
-func prTitle(number int) string {
-	if number == 0 {
-		return ""
-	}
-	return "PR #" + strconv.Itoa(number)
-}
+// ---- repo rollup (shared by jobs, repos, overview) --------------------------
 
 // repoTally is the per-repo finding rollup shared by jobs, repos, and overview.
 type repoTally struct {
@@ -257,16 +349,4 @@ func (t repoTally) mergeInto(acc *repoTally) {
 	for k, v := range t.byConf {
 		acc.byConf[k] += v
 	}
-}
-
-// transition DTOs (history endpoint, computed-spec shape).
-type transitionDTO struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Reason string `json:"reason"`
-	At     string `json:"at"`
-}
-
-func mapTransition(t store.Transition) transitionDTO {
-	return transitionDTO{From: string(t.From), To: string(t.To), Reason: t.Reason, At: rfc3339(t.At)}
 }
