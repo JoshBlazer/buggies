@@ -71,6 +71,18 @@ Run it yourself against any data root with
 [`deploy/capture-dashboard.sh`](deploy/capture-dashboard.sh); stand up a public,
 click-through demo on GitHub with [`deploy/DEMO.md`](deploy/DEMO.md).
 
+**Try it live — three real pull requests, reviewed by the bot under gVisor:**
+
+| Pull request | The change | What Buggies did |
+|---|---|---|
+| [buggies-demo-gold-tier-discount #1](https://github.com/JoshBlazer/buggies-demo-gold-tier-discount/pull/1) | capitalizes `'gold'`, dropping gold-tier discounts | ❌ **blocking** — reproduced the data-loss bug |
+| [buggies-demo-page-drops-last #1](https://github.com/JoshBlazer/buggies-demo-page-drops-last/pull/1) | pagination slice drops each page's last record | ❌ **blocking** — reproduced the dropped records |
+| [buggies-demo-clean-refactor #1](https://github.com/JoshBlazer/buggies-demo-clean-refactor/pull/1) | rewrites a `for`-loop as `reduce`, no behavior change | ✅ **clean** — no finding, no noise |
+
+No account or setup needed — open any PR and read the `buggies` check and review
+comment. The clean one is the point as much as the bugs: the reviewer is
+calibrated, not trigger-happy.
+
 ## How it works
 
 ```
@@ -174,6 +186,8 @@ posted an inline review comment carrying the failing test — webhook → queue 
 installation checkout → scope → triad → sandbox reproduction → check run +
 comment, untouched by human hands. On the eval fixtures it reproduces the
 seeded data-loss bugs and flags **nothing** on a behavior-preserving refactor.
+The three [live demo PRs](#see-it-work) above are those runs, posted to public
+repos and kept up so anyone can click through them.
 
 M1–M12 complete: scaffold, gVisor sandbox (no network, read-only rootfs,
 resource caps, registry-only egress proxy), the tree-sitter + SQLite code graph,
